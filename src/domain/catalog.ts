@@ -1,0 +1,155 @@
+import type { CanonicalSchemaCatalog } from "./contracts.js";
+import { normalizeHeader } from "../shared/text.js";
+
+const field = (
+  fieldId: string,
+  entityId: string,
+  label: string,
+  type: "text" | "integer" | "decimal" | "date" | "boolean",
+  risk: "descriptive" | "identity" | "financial" | "protected",
+  acceptedHeaders: string[],
+  strongIdentitySignal = false,
+) => ({
+  fieldId,
+  entityId,
+  label,
+  type,
+  risk,
+  acceptedHeaders: acceptedHeaders.map(normalizeHeader),
+  strongIdentitySignal,
+});
+
+export const clinicCanonicalCatalog: CanonicalSchemaCatalog = {
+  schemaVersion: "canonical-schema-catalog.v1",
+  catalogVersion: "clinic-canonical.v1",
+  entities: [
+    { entityId: "person", label: "Pessoa", grain: "person" },
+    { entityId: "professional", label: "Profissional", grain: "professional" },
+    { entityId: "catalog_item", label: "Item de catálogo", grain: "catalog_item" },
+    { entityId: "event", label: "Atendimento ou venda", grain: "event" },
+    { entityId: "event_item", label: "Item do atendimento", grain: "item" },
+    { entityId: "installment", label: "Parcela", grain: "installment" },
+    { entityId: "cost_allocation", label: "Alocação de custo", grain: "allocation" },
+    { entityId: "organizational_unit", label: "Unidade", grain: "organization" },
+  ],
+  fields: [
+    field("person.full_name", "person", "Nome da pessoa", "text", "identity", [
+      "nome do paciente",
+      "nome paciente",
+      "paciente",
+      "nome do cliente",
+      "nome cliente",
+      "cliente",
+    ]),
+    field(
+      "person.legacy_id",
+      "person",
+      "Identificador legado da pessoa",
+      "text",
+      "identity",
+      ["id paciente", "codigo paciente", "id cliente", "codigo cliente", "patient id"],
+      true,
+    ),
+    field("person.cpf", "person", "CPF", "text", "protected", ["cpf", "cpf paciente"], true),
+    field("person.email", "person", "E-mail", "text", "protected", ["email", "e mail", "email paciente"]),
+    field("person.phone", "person", "Telefone", "text", "protected", [
+      "telefone",
+      "celular",
+      "whatsapp",
+      "telefone paciente",
+    ]),
+    field("professional.full_name", "professional", "Nome do profissional", "text", "identity", [
+      "profissional",
+      "nome profissional",
+      "medico",
+      "dentista",
+      "responsavel tecnico",
+    ]),
+    field(
+      "professional.legacy_id",
+      "professional",
+      "Identificador legado do profissional",
+      "text",
+      "identity",
+      ["id profissional", "codigo profissional"],
+      true,
+    ),
+    field("catalog_item.name", "catalog_item", "Nome do item de catálogo", "text", "descriptive", [
+      "procedimento",
+      "produto",
+      "servico",
+      "nome procedimento",
+      "nome produto",
+    ]),
+    field("catalog_item.kind", "catalog_item", "Tipo do item", "text", "descriptive", [
+      "tipo item",
+      "tipo procedimento",
+      "categoria produto",
+    ]),
+    field("event.legacy_id", "event", "Identificador legado do evento", "text", "descriptive", [
+      "id atendimento",
+      "codigo atendimento",
+      "id venda",
+      "codigo venda",
+    ]),
+    field("event.occurred_on", "event", "Data do evento", "date", "descriptive", [
+      "data atendimento",
+      "data da consulta",
+      "data consulta",
+      "data venda",
+      "competencia",
+      "data",
+    ]),
+    field("event.gross_amount", "event", "Valor bruto", "decimal", "financial", [
+      "valor total",
+      "valor atendimento",
+      "valor venda",
+      "receita",
+      "faturamento",
+    ]),
+    field("event.status", "event", "Estado do evento", "text", "descriptive", [
+      "status atendimento",
+      "status venda",
+      "situacao",
+    ]),
+    field("event_item.quantity", "event_item", "Quantidade", "decimal", "financial", ["quantidade", "qtd"]),
+    field("event_item.unit_amount", "event_item", "Valor unitário", "decimal", "financial", [
+      "valor unitario",
+      "preco unitario",
+      "preco",
+    ]),
+    field("installment.number", "installment", "Número da parcela", "integer", "financial", [
+      "parcela",
+      "numero parcela",
+      "n parcela",
+    ]),
+    field("installment.due_date", "installment", "Vencimento", "date", "financial", [
+      "vencimento",
+      "data vencimento",
+    ]),
+    field("installment.amount", "installment", "Valor da parcela", "decimal", "financial", [
+      "valor parcela",
+      "valor da parcela",
+    ]),
+    field("installment.payment_method", "installment", "Meio de pagamento", "text", "financial", [
+      "forma pagamento",
+      "meio pagamento",
+      "pagamento",
+    ]),
+    field("cost_allocation.amount", "cost_allocation", "Valor do custo", "decimal", "financial", [
+      "custo",
+      "valor custo",
+      "comissao",
+      "imposto",
+    ]),
+    field("cost_allocation.category", "cost_allocation", "Categoria do custo", "text", "financial", [
+      "categoria custo",
+      "tipo custo",
+    ]),
+    field("organizational_unit.name", "organizational_unit", "Unidade", "text", "descriptive", [
+      "unidade",
+      "clinica",
+      "filial",
+    ]),
+  ],
+};
