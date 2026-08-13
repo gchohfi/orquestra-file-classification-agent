@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { existsSync, readFileSync } from "node:fs";
+import { parseEnv } from "node:util";
 import { resolve } from "node:path";
 import { BatchClassifier } from "./application/classify-batch.js";
 import { clinicCanonicalCatalog } from "./domain/catalog.js";
@@ -6,14 +8,17 @@ import { StaticProviderGate } from "./infrastructure/gates/static-provider-gate.
 import { NullLogger } from "./infrastructure/logging/null-logger.js";
 import { DeterministicClassificationModel } from "./infrastructure/models/deterministic-classification-model.js";
 import { InMemoryClassificationRepository } from "./infrastructure/repositories/in-memory-classification-repository.js";
+import { createOpenAIClassificationRuntime } from "./infrastructure/openai/openai-runtime.js";
+import type { ApprovedProviderGate, ClassificationModel } from "./ports.js";
 
 const LOCAL_APPROVAL = "local-development-no-external-transfer";
 
 async function main(): Promise<void> {
+  const environment = loadLocalEnvironment();
   const [directoryArg, ...rest] = process.argv.slice(2);
   if (!directoryArg) {
     process.stderr.write(
-      "Uso: npm run classify -- <pasta> --organization <id> --workspace <id> [--batch <id>]\n",
+      "Uso: npm run classify -- <pasta> --organization <id> --workspace <id> [--batch <id>] [--provider deterministic|openai]\n",
     );
     process.exitCode = 2;
     return;
@@ -27,11 +32,12 @@ async function main(): Promise<void> {
     return;
   }
 
-  const model = new DeterministicClassificationModel();
+  const provider = options.get("provider") ?? "deterministic";
+  const runtime = buildRuntime(provider, environment);
   const classifier = new BatchClassifier({
     catalog: clinicCanonicalCatalog,
-    model,
-    providerGate: new StaticProviderGate(new Map([[model.providerId, LOCAL_APPROVAL]])),
+    model: runtime.model,
+    providerGate: runtime.providerGate,
     repository: new InMemoryClassificationRepository(),
     logger: new NullLogger(),
   });
@@ -40,10 +46,58 @@ async function main(): Promise<void> {
     organizationId,
     workspaceId,
     actor: { userId: "local_admin", role: "organization_admin" },
-    providerApproval: { status: "approved", approvalId: LOCAL_APPROVAL },
   });
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify(renderCliResult(result, provider), null, 2)}\n`);
   if (result.status === "failed") process.exitCode = 1;
+}
+
+function buildRuntime(
+  provider: string,
+  environment: Readonly<Record<string, string | undefined>>,
+): {
+  model: ClassificationModel;
+  providerGate: ApprovedProviderGate;
+} {
+  if (provider === "openai") return createOpenAIClassificationRuntime(environment);
+  if (provider !== "deterministic") {
+    throw new Error("--provider deve ser deterministic ou openai.");
+  }
+  const model = new DeterministicClassificationModel();
+  return {
+    model,
+    providerGate: new StaticProviderGate(
+      new Map([[model.providerId, { approvalId: LOCAL_APPROVAL, provider: model.provider }]]),
+    ),
+  };
+}
+
+function loadLocalEnvironment(): Record<string, string | undefined> {
+  const fromFile = (name: string): Record<string, string | undefined> => {
+    const path = resolve(name);
+    return existsSync(path) ? parseEnv(readFileSync(path, "utf8")) : {};
+  };
+  return {
+    ...fromFile(".env"),
+    ...fromFile(".env.local"),
+    ...process.env,
+  };
+}
+
+function renderCliResult(
+  result: Awaited<ReturnType<BatchClassifier["classifyDirectory"]>>,
+  provider: string,
+): unknown {
+  if (provider !== "openai") return result;
+  if (result.status === "failed") return result;
+  return {
+    status: result.status,
+    errorCode: result.status === "blocked" ? result.errorCode : undefined,
+    planSha256: result.plan?.planSha256,
+    coverage: result.plan?.coverage,
+    blockers: result.plan?.blockers.map((issue) => issue.code) ?? [],
+    warnings: result.plan?.warnings.map((issue) => issue.code) ?? [],
+    reviewItems: result.plan?.reviewItems.length ?? 0,
+  };
 }
 
 function parseOptions(args: string[]): Map<string, string> {

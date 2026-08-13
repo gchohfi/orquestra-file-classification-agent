@@ -9,24 +9,22 @@ export type AlertSeverity = z.infer<typeof AlertSeveritySchema>;
 export const SourceReferenceSchema = z
   .object({
     fileId: z.string().min(1),
-    sheetId: z.string().min(1).optional(),
-    columnId: z.string().min(1).optional(),
-    rowStart: z.number().int().positive().optional(),
-    rowEnd: z.number().int().positive().optional(),
+    sheetId: z.string().min(1).nullable().optional(),
+    columnId: z.string().min(1).nullable().optional(),
+    rowStart: z.number().int().positive().nullable().optional(),
+    rowEnd: z.number().int().positive().nullable().optional(),
   })
   .strict()
   .superRefine((value, context) => {
-    if ((value.rowStart === undefined) !== (value.rowEnd === undefined)) {
+    const hasRowStart = value.rowStart !== undefined && value.rowStart !== null;
+    const hasRowEnd = value.rowEnd !== undefined && value.rowEnd !== null;
+    if (hasRowStart !== hasRowEnd) {
       context.addIssue({
         code: "custom",
         message: "rowStart e rowEnd devem aparecer juntos",
       });
     }
-    if (
-      value.rowStart !== undefined &&
-      value.rowEnd !== undefined &&
-      value.rowStart > value.rowEnd
-    ) {
+    if (value.rowStart != null && value.rowEnd != null && value.rowStart > value.rowEnd) {
       context.addIssue({
         code: "custom",
         message: "rowStart não pode ser maior que rowEnd",
@@ -40,7 +38,7 @@ export const SourceAlertSchema = z
     code: z.string().min(1),
     severity: AlertSeveritySchema,
     source: SourceReferenceSchema,
-    detail: z.string().min(1),
+    detail: z.string().min(1).max(1_000),
   })
   .strict();
 export type SourceAlert = z.infer<typeof SourceAlertSchema>;
@@ -189,7 +187,7 @@ export const EvidenceSchema = z
       "risk_signal",
     ]),
     sources: z.array(SourceReferenceSchema).min(1),
-    summary: z.string().min(1),
+    summary: z.string().min(1).max(500),
   })
   .strict();
 
@@ -199,7 +197,7 @@ export const EntityCandidateSchema = z
     grain: CanonicalEntitySchema.shape.grain,
     assessment: z.enum(["supported", "review_required", "blocking"]),
     evidenceIds: z.array(z.string().min(1)).min(1),
-    explanation: z.string().min(1),
+    explanation: z.string().min(1).max(500),
   })
   .strict();
 
@@ -225,7 +223,7 @@ const BaseColumnMappingSchema = z.object({
   source: SourceReferenceSchema,
   inferredType: z.enum(["text", "integer", "decimal", "date", "boolean", "mixed"]),
   confidenceClass: z.enum(["supported", "review_required", "blocking"]),
-  evidenceIds: z.array(z.string().min(1)),
+  evidenceIds: z.array(z.string().min(1)).min(1),
 });
 
 export const ColumnMappingSchema = z.discriminatedUnion("disposition", [
@@ -237,7 +235,7 @@ export const ColumnMappingSchema = z.discriminatedUnion("disposition", [
     disposition: z.literal("custom_field_candidate"),
     proposedField: z
       .object({
-        name: z.string().min(1),
+        name: z.string().min(1).max(120),
         type: z.enum(["text", "integer", "decimal", "date", "boolean"]),
         category: z.enum(["administrative", "commercial", "financial", "operational"]),
         approvalState: z.literal("pending"),
@@ -246,11 +244,11 @@ export const ColumnMappingSchema = z.discriminatedUnion("disposition", [
   }).strict(),
   BaseColumnMappingSchema.extend({
     disposition: z.literal("preserved"),
-    reason: z.string().min(1),
+    reason: z.string().min(1).max(500),
   }).strict(),
   BaseColumnMappingSchema.extend({
     disposition: z.literal("unresolved"),
-    reason: z.string().min(1),
+    reason: z.string().min(1).max(500),
   }).strict(),
 ]);
 export type ColumnMapping = z.infer<typeof ColumnMappingSchema>;
@@ -258,11 +256,11 @@ export type ColumnMapping = z.infer<typeof ColumnMappingSchema>;
 export const SourceGroupSchema = z
   .object({
     groupId: z.string().min(1),
-    label: z.string().min(1),
+    label: z.string().min(1).max(120),
     memberBlockIds: z.array(z.string().min(1)).min(1),
     groupType: z.enum(["single_source", "periodic_history", "related_sources"]),
     assessment: z.enum(["supported", "review_required"]),
-    evidenceIds: z.array(z.string().min(1)),
+    evidenceIds: z.array(z.string().min(1)).min(1),
   })
   .strict();
 
@@ -320,8 +318,8 @@ export const ReviewItemSchema = z
     reviewItemId: z.string().min(1),
     code: z.string().min(1),
     sources: z.array(SourceReferenceSchema).min(1),
-    reason: z.string().min(1),
-    actionRequired: z.string().min(1),
+    reason: z.string().min(1).max(500),
+    actionRequired: z.string().min(1).max(500),
   })
   .strict();
 
@@ -329,7 +327,7 @@ export const PlanIssueSchema = z
   .object({
     code: z.string().min(1),
     sources: z.array(SourceReferenceSchema).min(1),
-    detail: z.string().min(1),
+    detail: z.string().min(1).max(1_000),
   })
   .strict();
 
@@ -428,12 +426,6 @@ export const ClassifyBatchRequestSchema = z
       .object({
         userId: z.string().min(1),
         role: z.literal("organization_admin"),
-      })
-      .strict(),
-    providerApproval: z
-      .object({
-        status: z.enum(["approved", "not_approved"]),
-        approvalId: z.string().min(1).optional(),
       })
       .strict(),
   })

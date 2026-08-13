@@ -11,6 +11,7 @@ import { NullLogger } from "../src/infrastructure/logging/null-logger.js";
 import { DeterministicClassificationModel } from "../src/infrastructure/models/deterministic-classification-model.js";
 import { InMemoryClassificationRepository } from "../src/infrastructure/repositories/in-memory-classification-repository.js";
 import type { ClassificationModel } from "../src/ports.js";
+import type { ApprovedProviderGate } from "../src/ports.js";
 
 export const TEST_APPROVAL = "test-local-approval";
 
@@ -60,18 +61,20 @@ export function defaultRequest(overrides: Partial<ClassifyBatchRequest> = {}): C
     organizationId: "org_test",
     workspaceId: "workspace_test",
     actor: { userId: "admin_test", role: "organization_admin" },
-    providerApproval: { status: "approved", approvalId: TEST_APPROVAL },
     ...overrides,
   };
 }
 
 export function classifierWith(
   model: ClassificationModel = new DeterministicClassificationModel(),
+  providerGate: ApprovedProviderGate = new StaticProviderGate(
+    new Map([[model.providerId, { approvalId: TEST_APPROVAL, provider: model.provider }]]),
+  ),
 ): BatchClassifier {
   return new BatchClassifier({
     catalog: clinicCanonicalCatalog,
     model,
-    providerGate: new StaticProviderGate(new Map([[model.providerId, TEST_APPROVAL]])),
+    providerGate,
     repository: new InMemoryClassificationRepository(),
     logger: new NullLogger(),
   });

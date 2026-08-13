@@ -14,6 +14,7 @@ import type {
 } from "../../domain/contracts.js";
 import type { z } from "zod";
 import { deterministicId, sha256 } from "../../shared/hash.js";
+import { CLASSIFICATION_POLICY_VERSION, CLASSIFIER_VERSION } from "../../config.js";
 import { periodicFamilyName } from "../../shared/text.js";
 import type { ClassificationModel, ClassificationModelInput } from "../../ports.js";
 
@@ -37,6 +38,18 @@ type BlockContext = {
 
 export class DeterministicClassificationModel implements ClassificationModel {
   public readonly providerId = "local-deterministic";
+  public readonly provider = Object.freeze({
+    providerId: this.providerId,
+    transport: "local" as const,
+    endpointOrigin: "local://deterministic",
+    model: CLASSIFIER_VERSION,
+    reasoningEffort: "deterministic",
+    store: false,
+    background: false,
+    promptVersion: "none",
+    schemaVersion: "classification-proposal.v1",
+    policyVersion: CLASSIFICATION_POLICY_VERSION,
+  });
 
   public async classify(input: ClassificationModelInput, signal: AbortSignal): Promise<unknown> {
     signal.throwIfAborted();
@@ -590,6 +603,6 @@ function uniqueById<T extends Record<K, string>, K extends keyof T>(items: T[], 
   return [...byId.values()];
 }
 
-function isString(value: string | undefined): value is string {
+function isString(value: unknown): value is string {
   return typeof value === "string";
 }
