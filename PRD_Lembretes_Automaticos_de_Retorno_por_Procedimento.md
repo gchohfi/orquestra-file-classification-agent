@@ -1,838 +1,553 @@
 # PRD — Lembretes Automáticos de Retorno por Procedimento
 
-**Status:** rascunho para aprovação clínica, operacional, jurídica e técnica
+**Versão:** 2.0  
+**Data:** 18 de agosto de 2026  
+**Produto:** Projeto Consultório.ia / Orquestra IA  
+**Módulo:** relacionamento e reavaliação de manutenção  
+**Fonte funcional:** 37 respostas registradas em 17/08/2026 às 20:01  
+**Status das regras:** `DRAFT_INTERNAL`  
+**Modo de execução:** `INTERNAL_ONLY`  
+**Contato externo autorizado:** `false`
 
-**Produto:** Projeto Consultório.ia / Orquestra IA · **Módulo:** relacionamento com pacientes
-
-**Público:** Produto, Engenharia, Operações, Responsável Clínico e Privacidade
-
-**Data:** 17 de agosto de 2026 · **Escopo:** especificação; nenhuma automação ou integração foi implementada
+Esta versão substitui o rascunho anterior e incorpora as decisões fornecidas pela Dra. Marcella. Os prazos são regras registradas para esta clínica; não são duração universal, recomendação médica individual nem autorização para contatar pacientes.
 
 ## 1. Resumo executivo
 
-Criar um recurso que transforme cada **procedimento concluído** de um paciente em uma expectativa rastreável de retorno. O sistema calculará um marco de renovação aprovado pela clínica e ativará o lembrete **exatamente 14 dias corridos antes desse marco**.
+O produto deverá identificar procedimentos efetivamente concluídos, calcular um marco de reavaliação aprovado pela clínica e ativar um lembrete **exatamente 14 dias corridos antes do marco**.
 
-A ativação em D-14 será automática e determinística. O envio no mesmo dia poderá ocorrer em modo **automático supervisionado** somente quando a regra clínica, o template, a identidade, o contato, o consentimento e o canal estiverem válidos. Se qualquer gate falhar, o item permanecerá bloqueado ou irá para revisão; o sistema nunca deverá contatar uma pessoa apenas porque seu nome aparece em uma planilha.
+Nesta versão, o sistema poderá calcular expectativas, montar prévias e encaminhar exceções para revisão. Toda execução permanece interna. Publicar uma regra clínica não autoriza automaticamente o envio: identidade, contato, consentimento, restrições, template, canal, frequência e modo de autonomia possuem aprovações próprias.
 
-Faixas como “4 a 6 meses” não são executáveis sozinhas. Cada produto, material, finalidade ou variante aplicável deverá ter um único `renewal_milestone_months` publicado e aprovado. As faixas informadas pela usuária serão preservadas como briefing, mas não serão convertidas silenciosamente em recomendação clínica.
+A mensagem deve convidar para uma avaliação com a Dra. Marcella. Nunca deve afirmar que o efeito terminou, que o procedimento precisa ser repetido ou que existe recomendação clínica individual.
 
-O texto ao paciente deverá convidar para uma **reavaliação**, sem afirmar que o efeito terminou, que o procedimento precisa ser repetido ou que existe uma recomendação clínica individual.
+## 2. Problema e objetivo
 
-## 2. Contexto e evidências disponíveis
+A clínica precisa acompanhar quando cada pessoa se aproxima do período esperado de manutenção. Uma regra genérica por “última visita” não funciona porque os marcos variam, protocolos podem ter várias sessões, retoques alteram a referência e opt-out, restrições ou agendamentos podem mudar a elegibilidade.
 
-O arquivo da Dra. Marcella apresenta três tipos de informação com granularidades diferentes:
+Além disso:
 
-- `Competência`: número da NF, data da venda, cliente e profissional.
-- `Planilha1`: valores agregados por procedimento.
-- `Caixa`: estrutura financeira descrita como contendo atendimento, cliente, procedimento, pagamentos, custos, lucro e repasses.
+- NF, venda, pagamento ou parcela não comprovam realização;
+- nome isolado não comprova identidade;
+- próxima sessão, acompanhamento clínico e manutenção são jornadas diferentes;
+- registros incompletos não podem ser completados por inferência da IA.
 
-O próprio material informa que cada nota fiscal entra como `PENDENTE` e que tratamentos e pagamentos são completados posteriormente na tela de Vendas e Notas Fiscais. Portanto:
+O objetivo é criar expectativas rastreáveis de reavaliação de manutenção em D-14, com regras versionadas, falha fechada e revisão humana quando necessária.
 
-- Uma venda ou NF pendente não prova que o procedimento foi realizado.
-- Um resumo financeiro por procedimento não permite identificar pacientes elegíveis.
-- Nome e data isolados não provam identidade canônica.
-- Valor, pagamento, parcela, lucro ou repasse não devem determinar o ciclo de retorno.
+## 3. Fora do escopo
 
-O documento mestre da Orquestra IA define princípios compatíveis com este PRD: Postgres como fonte operacional, separação entre dado canônico e procedência, jobs assíncronos, idempotência, RLS, timeline única, consentimento, suppression list, policy gate, WhatsApp oficial e automação supervisionada. O mesmo documento registra que envio real de WhatsApp e calendário ainda não estavam comprovados ponta a ponta no snapshot consultado; logo, esta especificação não deve ser interpretada como integração pronta.
+- Diagnosticar, prescrever, garantir duração ou recomendar repetição.
+- Definir prazo clínico por IA, média de pacientes ou valor financeiro.
+- Unir pessoas apenas pelo nome.
+- Criar campanha em massa, promoção ou cadência comercial.
+- Incluir prontuário, diagnóstico, exame, foto ou intercorrência na mensagem.
+- Enviar quando uma regra estiver em rascunho, bloqueada, vencida ou conflitante.
+- Implementar WhatsApp, agenda ou CRM paralelo sem integração oficial aprovada.
+- Tratar este PRD como autorização de produção.
 
-O PRD de Públicos Inteligentes já introduz `ReturnWindowDefinition` para risco e inatividade. Este PRD reutiliza e especializa esse contrato para criar expectativas e lembretes individuais, sem criar uma segunda taxonomia concorrente.
+## 4. Tipos de retorno e governança
 
-## 3. Problema
+| Tipo | Finalidade | Cobertura |
+|---|---|---|
+| `maintenance_reassessment` | Reavaliação futura de manutenção | Escopo principal |
+| `protocol_next_session` | Próxima sessão de uma série | Fora do MVP; Esvaziador pendente |
+| `clinical_followup` | Acompanhamento após consulta ou procedimento | Fora do MVP; Consulta pendente |
 
-A equipe precisa lembrar manualmente quando um paciente se aproxima da janela de retorno de um procedimento. Como os procedimentos têm durações diferentes — e alguns dependem de marca, produto, material, ponteira, finalidade, região ou protocolo — um filtro único por “última visita” gera contatos antecipados, atrasados ou clinicamente inadequados.
+Uma regra de manutenção nunca gera próxima sessão ou acompanhamento clínico por inferência.
 
-Sem um motor governado, também há risco de duplicidade, contato com homônimo, uso de NF pendente como se fosse atendimento, desrespeito a opt-out, exposição desnecessária do nome do procedimento e envio retroativo depois de uma falha do sistema.
-
-## 4. Objetivos
-
-### 4.1 Objetivo principal
-
-Ativar automaticamente uma única expectativa de contato em D-14 para cada relação válida entre paciente e procedimento, usando um marco de renovação publicado pela clínica e preservando identidade, consentimento, procedência e auditoria.
-
-### 4.2 Objetivos específicos
-
-- Calcular o marco e D-14 de forma reproduzível, inclusive em fins de mês e anos bissextos.
-- Permitir regras específicas por produto, material, finalidade e variante, sem inferência clínica pela IA.
-- Cancelar ou recalcular expectativas diante de novo procedimento, correção, agendamento válido, opt-out ou mudança de identidade.
-- Impedir duplicidades em retries, reimportações e linhas financeiras repetidas.
-- Separar geração automática, elegibilidade, aprovação e efeito externo.
-- Operar em modo assistido no piloto e permitir evolução segura para automático supervisionado.
-- Medir envio, resposta, agendamento e retorno sem confundir correlação com atribuição comprovada.
-
-## 5. Não objetivos
-
-- Diagnosticar, prescrever ou recomendar repetição de procedimento.
-- Definir duração clínica por IA, valor financeiro ou comportamento de outros pacientes.
-- Usar apenas nome para unir pessoas ou autorizar contato.
-- Transformar a planilha agregada `Planilha1` em lista individual de pacientes.
-- Tratar NF, cobrança ou pagamento como prova automática de procedimento concluído.
-- Criar uma infraestrutura paralela de CRM, WhatsApp ou agenda.
-- Enviar campanhas em massa, descontos ou uma cadência comercial multietapas.
-- Incluir prontuário, diagnóstico, prescrição, exame, foto clínica ou descrição sensível na mensagem.
-- Criar lembretes para procedimentos ainda sem regra aprovada.
-- Misturar acompanhamento pós-procedimento, próxima sessão de protocolo e reavaliação de manutenção no mesmo relógio.
-
-## 6. Definições e decisões centrais
-
-### 6.1 Tipo de lembrete deste PRD
-
-Este PRD cobre somente `maintenance_reassessment`: convite para reavaliação próximo de uma janela estimada de manutenção.
-
-Devem existir fluxos separados para:
-
-- `clinical_followup`: acompanhamento pós-procedimento definido pela médica;
-- `protocol_next_session`: próxima sessão de um protocolo ou série;
-- `maintenance_reassessment`: reavaliação futura tratada neste PRD.
-
-Uma regra de manutenção nunca substitui os dois primeiros fluxos.
-
-### 6.2 Invariante D-14
+Ciclo da regra:
 
 ```text
-renewal_on =
-  add_calendar_months(procedure_completed_on, renewal_milestone_months)
-
-activation_on =
-  renewal_on - 14 calendar_days
+RECORDED -> APPROVED -> PUBLISHED -> RETIRED
+                \-> REJECTED
 ```
 
-Regras do cálculo:
+Modos de execução:
 
-- Usar a data civil e o fuso IANA da clínica, por exemplo `America/Sao_Paulo`.
-- Não converter meses em 30 dias nem anos em 365 dias.
-- Se o dia não existir no mês de destino, usar o último dia válido daquele mês.
-- A expectativa torna-se elegível no início do dia local de `activation_on`.
-- O worker deve processá-la dentro da janela operacional configurada do mesmo dia.
-- `reminder_lead_days` será fixo em `14` no MVP.
+- `INTERNAL_ONLY`: cálculo, simulação e prévia, sem contato;
+- `ASSISTED_CONTACT_AUTHORIZED`: contato individual após aprovação humana;
+- `AUTOMATIC_SUPERVISED_AUTHORIZED`: envio automático com gates, supervisão e pausa emergencial.
 
-### 6.3 Faixa informativa versus marco executável
+O estado atual é `INTERNAL_ONLY` e `external_contact_authorized=false`.
 
-`duration_min_months` e `duration_max_months` registram a faixa fornecida pela clínica. `renewal_milestone_months` é o único valor usado no cálculo. Ele deve ter produto/protocolo aplicável, responsável clínico, versão, vigência e data de aprovação.
-
-Sem um marco único publicado, a relação fica em `blocked_policy_missing`; o sistema não escolhe automaticamente mínimo, média ou máximo.
-
-### 6.4 Ativar não significa enviar
-
-Em D-14, o sistema sempre reavalia o item. O resultado pode ser:
-
-- `ready_for_assisted_review`: piloto ou política exige revisão humana.
-- `ready_for_automatic_dispatch`: automático supervisionado e todos os gates passaram.
-- `blocked`: falta identidade, contato, consentimento, regra, variante, template ou canal.
-- `cancelled` ou `superseded`: a expectativa deixou de ser válida.
-
-Nenhuma mensagem pode ser enviada apenas com base na existência do lembrete.
-
-## 7. Catálogo inicial para validação
-
-Os intervalos abaixo vieram do briefing da usuária. Eles devem permanecer como evidência de negócio até a clínica aprovar uma regra específica. Fontes oficiais consultadas confirmam que duração de efeito não equivale automaticamente a recomendação individual de repetição.
-
-| Categoria observada | Faixa informada | Granularidade mínima antes de publicar | Marco executável inicial |
-|---|---:|---|---|
-| Toxina | 4–6 meses | produto/marca, indicação, região e protocolo | rascunho de 4 meses; bloqueado até aprovação específica |
-| Bioestímulo | 12–18 meses | produto/material, finalidade e distinção entre série e manutenção | nenhum marco genérico |
-| Fio liso | 18–24 meses | marca, material, tipo, região e IFU aplicável | nenhum marco genérico |
-| Linear Z | depende de ponteira e finalidade | cartucho/ponteira, profundidade, modo, área, finalidade e protocolo | nenhum marco genérico |
-
-### 7.1 Justificativas clínicas de produto
-
-- **Toxina:** a Anvisa informa que o intervalo varia conforme o produto. A bula brasileira do BOTOX registra efeito estético aproximado de 3–4 meses na maioria e até 6 meses em alguns casos, além de indicar que intervalos inferiores a 3 meses em geral não são recomendados. Esses dados não devem ser transportados automaticamente para outra marca ou indicação.
-- **Bioestímulo:** a categoria reúne produtos distintos. Sculptra/PLLA pode envolver série de sessões e manutenção de longo prazo; Radiesse/CaHA tem informações específicas por produto e indicação. O sistema deve separar produto e tipo de retorno.
-- **Fio liso:** material e fabricante alteram absorção e duração estimada. Informação de PDO não pode ser aplicada a PLLA, PCL ou outra marca/material.
-- **Linear Z:** fabricante descreve variação por paciente e protocolo, múltiplos cartuchos/profundidades e modos. “Ponteira” isolada ainda é insuficiente.
-
-### 7.2 Outros itens observados
-
-O resumo também contém `Consulta`, `Esvaziador pernas`, `Fio eyebag`, `Preenchedor` e `Retoque toxina`.
-
-- `Consulta` não cria ciclo de renovação por padrão.
-- `Retoque toxina` não reinicia o ciclo até a clínica publicar se ele reinicia, mantém ou apenas complementa a expectativa anterior.
-- Os demais itens permanecem `unconfigured` e não geram lembretes.
-- Aliases de planilha só apontam para item canônico após revisão.
-
-### 7.3 Exemplo condicional do cálculo
-
-Se o responsável clínico publicar Toxina com marco de 4 meses e o procedimento for concluído em 17/08/2026:
+## 5. Cálculo D-14
 
 ```text
-renewal_on  = 17/12/2026
+renewal_on = add_calendar_months(anchor_date, renewal_milestone_months)
+activation_on = renewal_on - 14 calendar_days
+```
+
+Para uma regra formalmente definida em dias:
+
+```text
+renewal_on = anchor_date + stated_interval_days
+activation_on = renewal_on - 14 calendar_days
+```
+
+Regras:
+
+- usar meses civis, nunca blocos de 30 dias;
+- subtrair 14 dias corridos, nunca úteis;
+- se o dia não existir no mês de destino, usar o último dia válido;
+- registrar `anchor_date`, `renewal_on` e `activation_on`;
+- calcular no fuso IANA publicado pela clínica;
+- reavaliar todos os gates em D-14 e antes do handoff;
+- não antecipar ou atrasar silenciosamente em domingo ou feriado;
+- se o job perder D-14, usar `OVERDUE_REVIEW`, sem envio retroativo automático.
+
+Exemplo:
+
+```text
+anchor_date = 17/08/2026
+renewal_milestone_months = 4
+renewal_on = 17/12/2026
 activation_on = 03/12/2026
 ```
 
-Se publicar Bioestímulo com marco de 12 meses para um produto e finalidade específicos:
+## 6. Catálogo consolidado
+
+Todos os marcos abaixo têm origem `RECORDED`. Nenhum está autorizado para contato externo.
+
+| ID | Procedimento/variante | Marco | Âncora | Tratamento adicional | Estado |
+|---|---|---:|---|---|---|
+| `RET-TOX-DYSPORT-001` | Toxina — Dysport | 4 meses | Conclusão do protocolo | Retoque válido reinicia; escopo clínico pendente | `DRAFT_INTERNAL` |
+| `RET-TOX-XEOMIN-001` | Toxina — Xeomin | 4 meses | Conclusão do protocolo | Retoque válido reinicia; escopo clínico pendente | `DRAFT_INTERNAL` |
+| `RET-BIO-ELLANSE-001` | Bioestímulo — Ellansé | 12 meses | Última aplicação após protocolo concluído | Finalidade e protocolo pendentes | `DRAFT_INTERNAL` |
+| `RET-BIO-ELLEVA-X-001` | Bioestímulo — Elleva X | 12 meses | Última aplicação após protocolo concluído | Finalidade e protocolo pendentes | `DRAFT_INTERNAL` |
+| `RET-BIO-RADIESSE-001` | Bioestímulo — Radiesse | 12 meses | Última aplicação após protocolo concluído | Finalidade e protocolo pendentes | `DRAFT_INTERNAL` |
+| `RET-FIO-PDO-LISO-001` | Fios Lisos PDO | 18 meses | Conclusão do protocolo | Material, região e protocolo pendentes | `DRAFT_INTERNAL` |
+| `RET-FIO-EYEBAG-001` | Fios Eyebag | 12 meses | Conclusão do protocolo | Produto, material e protocolo pendentes | `DRAFT_INTERNAL` |
+| `RET-LINEAR-Z-001` | Linear Z — regiões listadas | 6 meses | Última sessão após protocolo concluído | Região, finalidade e ponteira obrigatórias | `BLOCKED` |
+| `RET-PREEN-SHAPE-LIDO-001` | Glúteo — Shape Lido | 12 meses | Conclusão do protocolo | Semântica do retoque pendente | `DRAFT_INTERNAL` |
+| `RET-PREEN-LIPS-DUO-001` | Lábios — Lips Duo | 12 meses | Conclusão do protocolo | Semântica do retoque pendente | `DRAFT_INTERNAL` |
+| `RET-PREEN-SUBSKIN-NARIZ-001` | Nariz — Subskin | 12 meses | Conclusão do protocolo | Semântica do retoque pendente | `DRAFT_INTERNAL` |
+| `RET-PREEN-SUBSKIN-QUEIXO-001` | Queixo — Subskin | 12 meses | Conclusão do protocolo | Semântica do retoque pendente | `DRAFT_INTERNAL` |
+| `RET-PERNAS-MANUTENCAO-001` | Esvaziador de pernas — manutenção | 12 meses | Conclusão do protocolo | Não usar para próxima sessão | `DRAFT_INTERNAL` |
+| `RET-CONSULTA-001` | Consulta | 30 dias informados | Data da consulta | Significado e fluxo ambíguos | `BLOCKED` |
+
+## 7. Regras específicas e exceções
+
+### 7.1 Toxina
+
+- O piloto começa por Dysport e Xeomin.
+- O marco registrado é de quatro meses.
+- A âncora é a conclusão do protocolo.
+- Um retoque classificado, concluído e coberto por regra publicada reinicia a contagem.
+- Região, indicação, exceções e critérios de “retoque válido” precisam ser publicados.
+
+### 7.2 Bioestimuladores e fios
+
+- Ellansé, Elleva X e Radiesse: 12 meses desde a última aplicação que conclui o protocolo.
+- Aplicação intermediária não cria manutenção.
+- Fios Lisos PDO: 18 meses desde a conclusão do protocolo.
+- Fios Eyebag: 12 meses desde a conclusão do protocolo.
+- As âncoras e variantes dos fios precisam ser ratificadas na publicação.
+
+### 7.3 Linear Z
+
+O marco registrado é de seis meses para barriga, braço, coxa, glúteos, joelho, olhos, papada, pescoço, rosto e terço inferior.
+
+Requisitos:
+
+- âncora na última sessão que conclui o protocolo;
+- região e finalidade definem a aplicabilidade;
+- ponteira é obrigatória;
+- falta de ponteira ou finalidade gera `REVIEW_REQUIRED`;
+- profundidade, modo e protocolo devem ser publicados ou dispensados formalmente;
+- protocolo em andamento não cria manutenção.
+
+Linear Z permanece `BLOCKED` até a publicação da matriz ou de decisão explícita de que seis meses vale para todas as combinações autorizadas.
+
+### 7.4 Preenchedores
+
+As quatro combinações possuem marco registrado de 12 meses. A resposta “retoque de preenchedor: sim” não define se o retoque reinicia, mantém ou complementa o ciclo. Até essa decisão, todo retoque de preenchedor gera `REVIEW_REQUIRED`.
+
+### 7.5 Esvaziador de pernas
+
+A resposta selecionou dois relógios:
+
+1. próxima sessão do protocolo;
+2. manutenção após o protocolo.
+
+Somente a manutenção recebeu prazo de 12 meses. A próxima sessão pertence a `protocol_next_session` e permanece bloqueada por falta de intervalo.
+
+### 7.6 Consulta
+
+“Após 30 dias” permite duas interpretações:
+
+1. marco no 30º dia, com ativação no 16º dia após a consulta;
+2. mensagem de acompanhamento no próprio 30º dia.
+
+A segunda pertence a `clinical_followup`. Consulta permanece bloqueada até a responsável clínica definir significado, template e fluxo.
+
+## 8. Regras transversais extraídas
+
+| Tema | Decisão registrada | Comportamento desta versão |
+|---|---|---|
+| Objetivo | Sugerir renovação | Comunicação convida para avaliação; nunca afirma repetição necessária. |
+| Data individual | Substitui regra após aprovação | Override auditado; nunca supera gates. |
+| Âncora geral | Conclusão do protocolo | Exige evento canônico `completed`. |
+| Retoque geral | Reiniciar a contagem | Aplicado ao rascunho de Toxina; demais categorias dependem de publicação. |
+| Novo procedimento | Revisão da equipe | `REVIEW_REQUIRED`; sem substituição silenciosa. |
+| Agendamento existente | Manter o envio | Intenção preservada; revisão até existir política e template compatíveis. |
+| Vencimentos próximos | Mensagem separada por procedimento | Intenção preservada; depende de frequência e deduplicação. |
+| Registro incompleto | Revisão da equipe | `REVIEW_REQUIRED`, nunca envio. |
+| Bloqueios escolhidos | Opt-out e restrição médica | Bloqueios absolutos, somados aos gates do sistema. |
+| Informação permitida | Nome do procedimento | Somente após aprovação de privacidade; piloto usa texto neutro. |
+| Responsável | Recepção | Agenda e operação; conteúdo clínico escala para equipe clínica. |
+| Envio | Segunda a sábado, horário comercial | Horas, fuso, domingo e feriados pendentes. |
+| Piloto | Toxina | Dysport e Xeomin, inicialmente interno. |
+| Estado-alvo | Aprovação médica e depois automático | Exige piloto e liberação formal separada. |
+| Indicadores | Avaliações e procedimentos realizados | Acompanhados de métricas de proteção. |
+
+## 9. Precedência e reconciliação
+
+Aplicar nesta ordem:
+
+1. opt-out, restrição médica, incidente e bloqueios obrigatórios;
+2. data individual aprovada;
+3. regra específica de produto, finalidade, região e protocolo;
+4. regra específica do procedimento;
+5. regra da categoria;
+6. regra geral da clínica;
+7. ausência, conflito ou baixa confiança resulta em `REVIEW_REQUIRED`.
+
+A IA nunca completa dado clínico ausente, escolhe regra por similaridade ou supera bloqueio.
+
+Novo procedimento compatível concluído vai para revisão. A revisão cancela, substitui ou mantém a expectativa anterior explicitamente. Nunca devem existir duas expectativas ativas para a mesma relação canônica.
+
+## 10. Gates obrigatórios
+
+Antes de preparar ou enviar qualquer mensagem, exigir:
+
+### Evento e regra
+
+- procedimento comprovado como concluído;
+- data-âncora válida e não futura;
+- pessoa canônica resolvida;
+- exatamente uma regra `PUBLISHED` e vigente;
+- variantes obrigatórias preenchidas;
+- nenhum conflito entre eventos ou versões.
+
+### Identidade, consentimento e restrições
+
+- não unir pessoas somente pelo nome;
+- telefone verificado e vinculado à pessoa;
+- opt-out geral e do canal ausentes;
+- finalidade, base legal e permissão publicadas;
+- suppression list reavaliada;
+- nenhuma restrição médica, reclamação, intercorrência ou possível evento adverso ativo;
+- estado desconhecido falha fechado.
+
+### Operação e canal
+
+- template aprovado e vigente;
+- canal oficial comprovado ponta a ponta;
+- horário, fuso e política de feriados publicados;
+- limite de frequência disponível;
+- idempotência e reconciliação testadas;
+- feature flag, modo de autonomia e pausa emergencial autorizados.
+
+Os gates são rechecados na criação, em D-14, na reserva e antes do handoff.
+
+## 11. Fluxo da expectativa
 
 ```text
-renewal_on  = 17/08/2027
-activation_on = 03/08/2027
+DETECTED
+  -> NEEDS_DATA | AWAITING_RULE
+  -> SCHEDULED_INTERNAL
+  -> DUE_REVIEW
+  -> READY_ASSISTED
+  -> DISPATCH_RESERVED
+  -> DISPATCHED
+  -> RESPONDED | BOOKED | CLOSED
 ```
 
-Se publicar Fio liso com marco de 18 meses para um material e protocolo específicos:
+Estados de exceção:
+
+- `BLOCKED_OPT_OUT`
+- `BLOCKED_MEDICAL_RESTRICTION`
+- `BLOCKED_IDENTITY`
+- `BLOCKED_POLICY_MISSING`
+- `BLOCKED_CHANNEL`
+- `REVIEW_REQUIRED`
+- `OVERDUE_REVIEW`
+- `CANCELLED`
+- `SUPERSEDED`
+- `FAILED`
+
+Toda transição registra ator, horário, motivo, regra e versão. `DISPATCHED` só pode ocorrer com autorização externa explícita.
+
+## 12. Mensagem e atendimento
+
+Texto selecionado:
+
+> Olá, [nome]. Seu período de acompanhamento está se aproximando. Podemos ajudar você a agendar uma avaliação com a Dra. Marcella?
+
+Texto consolidado para aprovação:
+
+> Olá, [nome]. Seu período de acompanhamento está se aproximando. Podemos ajudar você a agendar uma avaliação com a Dra. Marcella? Este lembrete não significa que seja necessário repetir qualquer procedimento; essa decisão depende de avaliação individual. Se não quiser receber novos lembretes, é só nos avisar.
+
+Regras:
+
+- piloto usa mensagem neutra, sem nome do procedimento;
+- nome do procedimento só aparece após aprovação clínica e de privacidade;
+- não usar urgência, medo, desconto, diagnóstico ou promessa;
+- não afirmar término de efeito;
+- não prometer horário automaticamente;
+- usar o mínimo de dado pessoal necessário.
+
+Tratamento das respostas:
+
+| Resposta | Ação |
+|---|---|
+| Deseja agendar | Recepção assume o atendimento. |
+| Dúvida clínica | Encaminhar à equipe clínica. |
+| Reclamação ou possível intercorrência | Pausar automação e escalar imediatamente. |
+| Recusa clara de contato | Registrar opt-out e cancelar ações pendentes. |
+| Resposta ambígua | Revisão humana. |
+
+Qualquer resposta que indique não desejar contato interrompe novos lembretes.
+
+## 13. Agenda existente e múltiplos vencimentos
+
+A decisão registrada é manter o envio mesmo com agendamento. Antes de executar, definir quais agendamentos são compatíveis, se a mensagem continua necessária, um template sem convite redundante e a frequência entre confirmação e lembrete. Até lá:
 
 ```text
-renewal_on  = 17/02/2028
-activation_on = 03/02/2028
+future_compatible_appointment -> REVIEW_REQUIRED
 ```
 
-Sem regra completa, nenhum desses exemplos se torna elegível para envio.
+A decisão registrada para vencimentos próximos é uma mensagem separada por procedimento. Antes de executar, definir máximo por pessoa, intervalo mínimo, prioridade no mesmo dia e deduplicação. No piloto interno, mostrar uma única prévia neutra consolidada no mesmo dia, preservando o vínculo com cada expectativa.
 
-## 8. Usuários e responsabilidades
+## 14. Piloto de Toxina
 
-- **Responsável clínico:** aprova procedimento, variante, faixa, marco, linguagem e itens que reiniciam o ciclo.
-- **Administrador:** configura unidade, fuso, canal, horário, template, modo de autonomia e responsáveis.
-- **Operações/atendimento:** revisa fila assistida, resolve bloqueios e acompanha respostas e agendamentos.
-- **Privacidade/jurídico:** valida base legal, consentimento, opt-out, retenção, conteúdo e classificação da comunicação.
-- **Engenharia/dados:** garante modelo canônico, cálculo, fila, segurança, idempotência, reconciliação e observabilidade.
-- **Paciente:** recebe mensagem respeitosa, pode responder, pedir contato ou interromper comunicações.
+Escopo inicial:
 
-## 9. Histórias de usuário
+- uma clínica e um workspace;
+- Dysport e Xeomin;
+- marco de quatro meses e ativação D-14;
+- dados sintéticos ou prévias internas primeiro;
+- pequeno lote somente após autorização assistida;
+- revisão individual antes de cada contato;
+- recepção responsável pelas respostas;
+- WhatsApp oficial, opt-out ponta a ponta e pausa emergencial obrigatórios.
 
-### 9.1 Responsável clínico
+Para sair de `INTERNAL_ONLY`:
 
-- Como responsável clínico, quero publicar um marco exato por produto e variante para que o sistema não interprete uma faixa por conta própria.
-- Como responsável clínico, quero separar próxima sessão, acompanhamento e manutenção para evitar contato no momento errado.
-- Como responsável clínico, quero definir se um retoque reinicia o ciclo.
-- Como responsável clínico, quero simular o impacto antes de publicar uma regra.
-
-### 9.2 Operações
-
-- Como atendente, quero ver quem entra em D-14 hoje, o motivo e os bloqueios.
-- Como atendente, quero que novo procedimento ou agendamento válido retire automaticamente um lembrete ainda não enviado.
-- Como gestora, quero distinguir agendado, ativado, bloqueado, enviado, respondido e convertido.
-
-### 9.3 Paciente
-
-- Como paciente, quero receber no máximo uma comunicação adequada e no momento esperado para decidir se desejo uma reavaliação.
-- Como paciente, quero poder recusar novas mensagens de forma simples e imediata.
-- Como paciente, não quero que a mensagem revele detalhes sensíveis sem autorização apropriada.
-
-### 9.4 Auditoria e privacidade
-
-- Como auditora, quero reproduzir por que uma pessoa recebeu ou não recebeu uma mensagem usando evento, regra, versão, gates, template e tentativas.
-- Como responsável por privacidade, quero que opt-out e supressão interrompam ações pendentes antes de qualquer efeito externo.
-
-## 10. Fluxo funcional do MVP
-
-### 10.1 Configuração governada
-
-Fluxo da regra:
-
-```text
-draft
-→ simulated
-→ awaiting_clinical_approval
-→ awaiting_operational_approval
-→ published
-→ superseded
-```
-
-Estados alternativos: `rejected`, `cancelled` e `revoked`.
-
-Uma regra publicada é imutável. Alterações geram nova versão. Sobreposição não resolvida entre regras aplicáveis ao mesmo item e variante bloqueia a publicação.
-
-### 10.2 Criação da expectativa
-
-Somente um item de atendimento canônico com `status = completed` pode iniciar ou renovar um ciclo. O processamento deverá:
-
-1. Resolver organização e workspace.
-2. Resolver a pessoa canônica sem depender apenas do nome.
-3. Resolver evento, item, produto/material e variante.
-4. Encontrar exatamente uma regra publicada e vigente.
-5. Selecionar o item concluído mais recente que satisfaz a relação.
-6. Calcular marco e D-14.
-7. Fazer upsert idempotente de uma única expectativa ativa.
-8. Registrar evento, origem, regra, versão e resultado na timeline.
-
-NF pendente, venda sem confirmação operacional, agendamento, consulta, procedimento cancelado, item agregado e linha financeira repetida não iniciam ciclo.
-
-### 10.3 Ativação diária
-
-Um job diário e reconciliável deverá:
-
-1. Buscar expectativas `scheduled` cuja `activation_on` seja a data local corrente.
-2. Recalcular se o evento-âncora continua válido.
-3. Reavaliar identidade, contato, consentimento, supressão, frequência, agenda e restrições.
-4. Produzir decisão versionada de elegibilidade.
-5. Encaminhar para revisão assistida ou despacho automático supervisionado.
-6. Registrar resultado e próxima ação.
-
-Executar o job mais de uma vez deve produzir o mesmo estado e nunca duplicar o efeito externo.
-
-### 10.4 Novo procedimento, correção e agendamento
-
-Quando um novo procedimento concluído satisfizer a mesma regra:
-
-- a expectativa anterior ainda não enviada passa para `superseded_by_new_procedure`;
-- qualquer reserva de envio é cancelada;
-- uma nova expectativa única usa o evento mais recente;
-- histórico enviado permanece imutável e o novo evento inicia o próximo ciclo.
-
-Correção, reversão, merge ou split de identidade invalida a decisão afetada, recalcula a expectativa e preserva antes/depois em auditoria. Evento antigo importado fora de ordem nunca substitui silenciosamente uma âncora mais recente.
-
-Se já existir agendamento válido para reavaliação ou procedimento que satisfaça a mesma regra, o lembrete fica `held_by_future_appointment`. Cancelamento antes do marco devolve o item à revisão, não ao envio retroativo automático.
-
-## 11. Modelo lógico de domínio
-
-### 11.1 `ReturnWindowDefinition`
-
-- `definition_id` estável;
-- `organization_id` e `workspace_id`;
-- item ou categoria canônica;
-- marca, produto e material, quando aplicáveis;
-- aliases aprovados;
-- indicação, região e seletores de variante;
-- para Linear Z: cartucho/ponteira, profundidade, modo, área e finalidade;
-- `duration_min_months` e `duration_max_months`;
-- `renewal_milestone_months`;
-- intervalo mínimo aplicável e sua fonte;
-- `reminder_lead_days = 14`;
-- tipo `maintenance_reassessment`;
-- itens que satisfazem ou reiniciam o ciclo;
-- regra de retoque;
-- prioridade e vigência;
-- versão e estado;
-- aprovações clínica, operacional e de privacidade;
-- autoria, motivo e trilha de auditoria.
-
-### 11.2 `ReturnExpectation`
-
-Uma relação ativa por:
-
-```text
-organization_id
-+ workspace_id
-+ canonical_person_id
-+ return_window_definition_id
-```
-
-Campos mínimos:
-
-- pessoa canônica;
-- item/evento concluído usado como âncora;
-- `procedure_completed_on`;
-- `renewal_on`;
-- `activation_on`;
-- definição e versão fixadas;
-- estado e motivo;
-- expectativa anterior substituída;
-- linhagem até lote, arquivo, aba, linha e decisão de promoção.
-
-### 11.3 `ReminderCandidate`
-
-- identificador e chave idempotente;
-- expectativa de origem;
-- modo `assisted` ou `automatic_supervised`;
-- estado;
-- decisão de elegibilidade;
-- template e versão;
-- canal pretendido;
-- aprovação ou política que autorizou o efeito;
-- timestamps de reserva, handoff, envio, entrega, resposta e cancelamento;
-- motivo estruturado de bloqueio, expiração ou supersessão.
-
-### 11.4 `ReminderEligibilityDecision`
-
-Snapshot imutável no instante da decisão:
-
-- estado da base canônica;
-- confiança de identidade;
-- contato verificado e pertencimento;
-- consentimento e opt-out geral e por canal;
-- suppression list;
-- restrições clínica, jurídica e operacional;
-- frequência e contatos concorrentes;
-- agendamento futuro;
-- regra, template e canal válidos;
-- avaliador, versão, evidências e validade.
-
-Ausência, expiração ou erro de consulta equivale a `blocked`.
-
-### 11.5 `ReminderDeliveryAttempt`
-
-- `idempotency_key` externa;
-- provedor e conexão;
+- regras de Toxina `PUBLISHED`, com escopo e vigência;
+- identidade e telefone validados;
+- consentimento e privacidade aprovados;
 - template aprovado;
-- tentativa e limite;
-- estado aceito, enviado, entregue, lido, falho ou reconciliado;
-- ID externo;
-- erro tipado e sanitizado;
-- timestamps e custo;
-- payload bruto protegido ou hash, conforme política de retenção.
+- horário, fuso, domingos, feriados e frequência definidos;
+- canal oficial validado ponta a ponta;
+- testes de idempotência, opt-out e pausa aprovados;
+- autorização formal `ASSISTED_CONTACT_AUTHORIZED`.
 
-## 12. Estados da expectativa e do lembrete
+Automação supervisionada só poderá ser considerada após um piloto assistido sem contato incorreto, opt-out violado, duplicidade grave ou perda de rastreabilidade, e mediante nova aprovação formal.
 
-Fluxo principal:
+## 15. Modelo mínimo e idempotência
 
-```text
-scheduled
-→ activated_d14
-→ ready_for_assisted_review | ready_for_automatic_dispatch
-→ reserved
-→ handed_off
-→ sent
-→ delivered | delivery_failed
-→ responded | converted | closed
-```
+Entidades:
 
-Estados alternativos:
+- `ProcedureReturnRule`: regra, versão, vigência, seletores, âncora e aprovadores;
+- `ReturnExpectation`: pessoa, evento, regra, datas e estado;
+- `ReminderDecision`: gates, template, canal, ator e resultado;
+- `PatientPreference`: canal, finalidade, opt-out, fonte e auditoria.
 
-- `blocked_policy_missing`;
-- `blocked_variant_missing`;
-- `blocked_identity`;
-- `blocked_contact`;
-- `blocked_consent`;
-- `blocked_frequency`;
-- `held_by_future_appointment`;
-- `overdue_review`;
-- `superseded_by_new_procedure`;
-- `cancelled_by_opt_out`;
-- `cancelled`;
-- `expired`.
-
-Estados enviados ou concluídos nunca serão apagados ou reescritos; correções criam eventos compensatórios.
-
-## 13. Gates obrigatórios
-
-### 13.1 Base e evento
-
-- Lote promovido, reconciliado e rastreável.
-- Evento e item canônicos.
-- Procedimento efetivamente concluído.
-- Data civil válida e não futura.
-- Regra publicada e vigente.
-- Produto, material, indicação e variante completos quando exigidos.
-
-### 13.2 Identidade
-
-- Pessoa canônica resolvida por evidência suficiente.
-- Homônimos e merges pendentes bloqueados.
-- Telefone ou outro canal verificado e ligado à pessoa.
-- Alteração de identidade invalida decisões ainda não executadas.
-
-### 13.3 Consentimento e restrições
-
-- Opt-out geral ausente.
-- Canal sem opt-out específico.
-- Estado desconhecido tratado como bloqueado para aquele canal.
-- Suppression list e reclamações verificadas.
-- Base legal, finalidade e retenção publicadas pela organização.
-- Ausência de restrição clínica, jurídica ou operacional aplicável.
-
-Opt-out será rechecado na criação da expectativa, em D-14, na reserva e imediatamente antes do handoff. Opt-out posterior cancela toda ação ainda não enviada sem apagar o histórico analítico.
-
-### 13.4 Canal e automação
-
-- Integração oficial saudável e comprovada ponta a ponta.
-- Template vigente e permitido para o contexto do canal.
-- Fuso, janela de contato e limite de frequência válidos.
-- Idempotência e reconciliação do provedor aprovadas.
-- Modo de autonomia publicado para o workspace.
-- Feature flag do piloto ou do automático supervisionado habilitada.
-
-### 13.5 Comportamento fechado
-
-Se qualquer gate obrigatório estiver ausente, vencido ou indisponível, o lembrete poderá aparecer em prévia, mas não poderá produzir efeito externo.
-
-## 14. Política de autonomia e rollout
-
-### 14.1 Modo `assisted`
-
-Padrão do piloto. O sistema calcula, ativa e prepara a mensagem automaticamente; uma pessoa autorizada revisa e libera. Alteração de texto cria nova versão ou registra override auditado.
-
-### 14.2 Modo `automatic_supervised`
-
-Estado-alvo do recurso. O sistema envia no dia D-14 sem aprovação individual quando:
-
-- regra e template tiveram aprovação prévia;
-- o workspace concluiu o piloto;
-- todos os gates passaram;
-- limites, pausa emergencial e monitoramento estão ativos;
-- não há condição que exija handoff humano.
-
-Qualquer incerteza, reclamação, conflito, opt-out, erro de identidade, variante ausente ou atraso operacional retira o item do automático.
-
-### 14.3 Pausa emergencial
-
-Owner e admin deverão poder pausar imediatamente novos handoffs por organização, workspace, procedimento, regra, template, canal ou provedor. A pausa não apaga expectativas; muda-as para revisão.
-
-## 15. Mensagem e experiência do paciente
-
-### 15.1 Princípios de conteúdo
-
-- Falar em “acompanhamento” ou “reavaliação”, não em obrigação de repetir.
-- Não afirmar duração garantida, término de efeito ou necessidade clínica individual.
-- Não usar urgência artificial, medo, diagnóstico, desconto ou promessa de resultado.
-- Informar a clínica e oferecer ação simples: conversar, agendar avaliação ou não receber novas mensagens.
-- Usar o mínimo de dado pessoal necessário.
-
-### 15.2 Template neutro recomendado para o piloto
-
-> Olá, {{primeiro_nome}}. Está se aproximando o período de acompanhamento de um atendimento realizado em nossa clínica. Este lembrete não significa que seja necessário repetir qualquer procedimento; essa decisão depende de avaliação individual. Se desejar, podemos ajudar a agendar uma reavaliação. Para não receber novos lembretes, responda SAIR.
-
-O nome do procedimento não deverá aparecer por padrão. Um template específico só poderá ser publicado após avaliação clínica e de privacidade, consentimento compatível e confirmação de que o canal pertence à pessoa.
-
-### 15.3 Respostas
-
-- Pedido de agendamento: criar handoff para atendimento ou agenda, sem prometer horário.
-- Dúvida clínica: encaminhar a pessoa; o robô não responde conduta individual.
-- Reclamação ou possível evento adverso: interromper automação e encaminhar ao protocolo humano apropriado.
-- `SAIR` ou intenção equivalente: registrar opt-out imediatamente e cancelar ações pendentes.
-
-## 16. Deduplicação, frequência e concorrência
-
-### 16.1 Chaves idempotentes
-
-Geração da expectativa:
+Chave de idempotência:
 
 ```text
-organization_id
-+ workspace_id
-+ canonical_person_id
-+ return_window_definition_id
-+ anchor_service_item_id
-+ definition_version
+workspace_id + person_id + procedure_relation_key + activation_on + rule_version + template_version
 ```
 
-Efeito externo:
+Retry, reimportação ou duplicidade financeira não podem gerar segundo envio com a mesma chave.
 
-```text
-reminder_candidate_id
-+ channel
-+ template_version
-+ dispatch_cycle
+## 16. Requisitos
+
+### Funcionais
+
+- Distinguir venda, pagamento, sessão, retoque, protocolo concluído e consulta.
+- Resolver identidade sem nome isolado.
+- Versionar e publicar regras clínicas.
+- Calcular meses civis e D-14 de forma reproduzível.
+- Aplicar override somente com aprovação auditada.
+- Encaminhar novo procedimento, conflito e registro incompleto para revisão.
+- Recalcular retoque somente quando a regra publicada permitir.
+- Revalidar opt-out, restrições e identidade antes do handoff.
+- Impedir duplicidade em retry e reimportação.
+- Separar manutenção, próxima sessão e acompanhamento clínico.
+- Disponibilizar fila de revisão, pausa global e auditoria.
+- Nunca executar contato externo em `INTERNAL_ONLY`.
+
+### Não funcionais
+
+- LGPD por finalidade, minimização, retenção e rastreabilidade.
+- RLS e isolamento por workspace.
+- Criptografia em trânsito e em repouso.
+- Logs sem conteúdo clínico desnecessário.
+- Auditoria imutável de regra, gate, decisão e handoff.
+- Jobs idempotentes, observáveis e reconciliáveis.
+- Métricas e alertas para atraso, duplicidade, opt-out e falha de canal.
+- Feature flags, kill switch e backfill somente como prévia.
+
+## 17. Métricas
+
+Resultados do piloto:
+
+- avaliações agendadas;
+- procedimentos efetivamente realizados;
+- respostas recebidas;
+- tempo até atendimento da recepção.
+
+Métricas de proteção:
+
+- contato com pessoa errada;
+- opt-out desrespeitado;
+- duplicidade;
+- envio após restrição médica;
+- expectativa sem regra publicada;
+- itens em revisão e tempo de resolução;
+- falha ou atraso de processamento;
+- pedidos de interrupção.
+
+Resultados de agenda e procedimento são associação operacional, não causalidade comprovada.
+
+## 18. Critérios de aceite
+
+1. Dysport e Xeomin concluídos calculam quatro meses e D-14 em simulação.
+2. Bioestímulo usa a última aplicação que conclui o protocolo.
+3. Aplicação intermediária não cria manutenção.
+4. Fios Lisos PDO usam 18 meses e Eyebag 12 meses.
+5. Linear Z incompleto ou em protocolo aberto vai para revisão.
+6. Preenchedor com retoque fica em revisão até publicação da semântica.
+7. Esvaziador cria manutenção de 12 meses sem inventar próxima sessão.
+8. Consulta não cria lembrete enquanto a ambiguidade de 30 dias persistir.
+9. Data individual sem aprovação é rejeitada.
+10. Override aprovado não supera opt-out ou restrição médica.
+11. Novo procedimento compatível cria revisão, não segunda expectativa silenciosa.
+12. Registro financeiro sem conclusão não cria expectativa.
+13. Homônimo ou identidade incerta permanece bloqueado.
+14. Opt-out cancela ações pendentes antes do handoff.
+15. D-14 usa dias corridos, meses civis, fim de mês e ano bissexto corretamente.
+16. Domingo, feriado ou job atrasado não deslocam envio silenciosamente.
+17. Retry com a mesma chave não duplica decisão ou envio.
+18. Regra alterada preserva a versão usada na expectativa.
+19. Múltiplos vencimentos aparecem consolidados na prévia interna do piloto.
+20. `INTERNAL_ONLY` impede qualquer handoff externo.
+
+## 19. Pendências para publicação e produção
+
+- `P01` Confirmar nome, papel e autoridade da respondente.
+- `P02` Registrar aprovadores clínico, operacional e de privacidade.
+- `P03` Definir região, indicação, exceções e retoque válido de Toxina.
+- `P04` Publicar finalidade e protocolo dos bioestimuladores.
+- `P05` Ratificar âncoras e variantes dos fios.
+- `P06` Publicar ou dispensar formalmente a matriz de Linear Z.
+- `P07` Definir a semântica do retoque de preenchedor.
+- `P08` Definir o intervalo da próxima sessão do Esvaziador.
+- `P09` Resolver a ambiguidade da Consulta em 30 dias.
+- `P10` Definir política para agendamento existente.
+- `P11` Definir frequência e múltiplos vencimentos.
+- `P12` Fixar horário, fuso, domingo e feriados.
+- `P13` Aprovar template, menção ao procedimento e opt-out.
+- `P14` Aprovar finalidade, base legal, retenção e canal.
+- `P15` Comprovar integração oficial, idempotência, monitoramento e pausa.
+
+Resolver pendências não concede autorização externa automaticamente.
+
+## 20. Configuração estruturada de referência
+
+Esta configuração é documental. `DRAFT_INTERNAL` e `BLOCKED` nunca podem ser tratados como executáveis.
+
+```yaml
+schema_version: reminder-rules.v2
+source:
+  submitted_at: "2026-08-17T20:01:00-03:00"
+  answers_count: 37
+
+governance:
+  production_authorization: false
+  external_contact_authorized: false
+  execution_mode: INTERNAL_ONLY
+  reminder_lead_days: 14
+  timezone: PENDING_DECISION
+
+rules:
+  toxin:
+    anchor: protocol_completed_on
+    retouch_behavior: reset_when_valid_and_published
+    products:
+      dysport: { milestone_months: 4, status: DRAFT_INTERNAL }
+      xeomin: { milestone_months: 4, status: DRAFT_INTERNAL }
+
+  biostimulator:
+    anchor: last_application_that_completes_protocol
+    products:
+      ellanse: { milestone_months: 12, status: DRAFT_INTERNAL }
+      elleva_x: { milestone_months: 12, status: DRAFT_INTERNAL }
+      radiesse: { milestone_months: 12, status: DRAFT_INTERNAL }
+
+  threads:
+    anchor: protocol_completed_on
+    products:
+      smooth_pdo: { milestone_months: 18, status: DRAFT_INTERNAL }
+      eyebag: { milestone_months: 12, status: DRAFT_INTERNAL }
+
+  linear_z:
+    milestone_months: 6
+    anchor: last_session_that_completes_protocol
+    regions: [barriga, braco, coxa, gluteos, joelho, olhos, papada, pescoco, rosto, terco_inferior]
+    required_for_eligibility: [region, purpose, tip]
+    depth_mode_protocol: PENDING_DECISION
+    missing_variant: REVIEW_REQUIRED
+    status: BLOCKED
+
+  filler:
+    anchor: protocol_completed_on
+    retouch_behavior: PENDING_DECISION
+    products:
+      shape_lido_gluteo: { milestone_months: 12, status: DRAFT_INTERNAL }
+      lips_duo_labios: { milestone_months: 12, status: DRAFT_INTERNAL }
+      subskin_nariz: { milestone_months: 12, status: DRAFT_INTERNAL }
+      subskin_queixo: { milestone_months: 12, status: DRAFT_INTERNAL }
+
+  leg_enzymes:
+    maintenance: { milestone_months: 12, anchor: protocol_completed_on, status: DRAFT_INTERNAL }
+    next_session: { interval: PENDING_DECISION, status: BLOCKED }
+
+  consultation:
+    stated_interval_days: 30
+    flow_type: PENDING_DECISION
+    status: BLOCKED
+
+transversal:
+  individual_override: requires_approval_and_audit
+  new_compatible_procedure: REVIEW_REQUIRED
+  future_compatible_appointment: REVIEW_REQUIRED
+  multiple_due_procedures: REVIEW_REQUIRED
+  incomplete_record: REVIEW_REQUIRED
+  opt_out: ABSOLUTE_BLOCK
+  medical_restriction: ABSOLUTE_BLOCK
+  responsible_team: recepcao
+  sending_days: [monday, tuesday, wednesday, thursday, friday, saturday]
+  sending_hours: PENDING_DECISION
+
+pilot:
+  first_category: toxin
+  current_mode: INTERNAL_ONLY
+  next_possible_mode: ASSISTED_CONTACT_AUTHORIZED
+  target_mode: AUTOMATIC_SUPERVISED_AUTHORIZED
+  primary_outcomes: [evaluations_booked, procedures_completed]
 ```
 
-### 16.2 Regras
-
-- Reprocessar o mesmo evento ou job não cria outro lembrete.
-- Linhas repetidas de parcelas ou meios de pagamento não criam ciclos.
-- Um novo procedimento concluído substitui apenas a relação compatível.
-- Eventos de procedimentos diferentes permanecem independentes.
-- Se dois lembretes da mesma pessoa ativarem no mesmo dia, o sistema cria uma única ação de contato neutra e vincula as duas expectativas.
-- Cada candidato conserva sua data D-14 mesmo quando a política de frequência bloquear ou consolidar o envio.
-- O lembrete consome o orçamento global de frequência da pessoa até decisão jurídica diversa e publicada.
-
-## 17. Indisponibilidade e atraso
-
-- Se o job não rodar no dia exato, o item passa para `overdue_review`.
-- Não haverá envio retroativo automático.
-- Um revisor poderá cancelar ou autorizar contato tardio com motivo, depois de reavaliar os gates.
-- Tentativas aceitas pelo provedor não serão reenviadas por falta de confirmação local; primeiro reconciliar pelo ID externo.
-- Falha transitória poderá usar retry limitado no mesmo dia, com a mesma idempotency key.
-- Falha terminal, template rejeitado ou canal indisponível irá para revisão; não trocar de canal silenciosamente.
-
-## 18. Experiência operacional
-
-### 18.1 Painel “Retornos”
-
-O painel deverá mostrar:
-
-- ativações de hoje;
-- próximos 30, 60 e 90 dias;
-- bloqueados por motivo;
-- atrasados;
-- enviados, entregues, respondidos e convertidos;
-- filtros por unidade, procedimento, produto/variante, profissional, regra e estado;
-- modo assistido ou automático supervisionado;
-- botão de pausa e acesso à auditoria.
-
-Cada item deverá explicar:
-
-- qual procedimento/evento iniciou a expectativa;
-- qual regra e versão foram usadas;
-- como marco e D-14 foram calculados;
-- por que está elegível, bloqueado, cancelado ou consolidado;
-- quais dados de origem sustentam a decisão.
-
-### 18.2 Prévia antes da base canônica
-
-Enquanto a base real não estiver promovida e reconciliada, poderá existir relatório local não acionável com:
-
-- totais `scheduled`, `activated_d14`, `blocked` e `overdue_review`;
-- procedimento, variante, data do evento, marco e ativação;
-- regra e versão;
-- motivo estruturado do bloqueio;
-- origem rastreável;
-- banner permanente “prévia não acionável”.
-
-Nomes reais não deverão ser gravados em logs, JSON ou Git. Relatórios identificados permanecem locais, com acesso restrito e sem scripts ou rede.
-
-## 19. Requisitos funcionais
-
-### 19.1 P0 — obrigatório
-
-1. Publicar regras versionadas com marco exato e `reminder_lead_days = 14`.
-2. Exigir aprovação clínica antes de publicar qualquer produto ou variante.
-3. Criar expectativa somente a partir de procedimento canônico concluído.
-4. Calcular meses civis, fim de mês, ano bissexto e D-14 de forma determinística.
-5. Bloquear categorias genéricas sem os atributos mínimos definidos na seção 7.
-6. Separar expectativa, elegibilidade, candidato, handoff e tentativa de envio.
-7. Reavaliar gates em D-14 e antes de qualquer efeito externo.
-8. Respeitar opt-out, suppression list, frequência, restrições e agenda futura.
-9. Cancelar ou substituir expectativa quando houver novo evento válido.
-10. Impedir duplicidade em importação, retry, concorrência e reconciliação.
-11. Registrar timeline e auditoria reproduzíveis.
-12. Disponibilizar fila assistida, bloqueios, pausa e prévia.
-13. Usar template neutro e opt-out simples no piloto.
-14. Isolar organização e workspace no backend e banco.
-15. Falhar fechado quando dado, gate ou provedor estiver indisponível.
-
-### 19.2 P1 — próxima fase
-
-- Agregação de múltiplas expectativas da mesma pessoa.
-- Integração com agenda para oferecer horários após interesse explícito.
-- Dashboard de resposta, agendamento e retorno.
-- Regras adicionais por produto, material, dose, ponteira, finalidade e profissional, quando aprovadas.
-- Canal alternativo explicitamente escolhido pelo paciente.
-- Automático supervisionado após aprovação do piloto.
-
-### 19.3 P2 — futuro
-
-- Segundo lembrete configurável, sujeito a nova avaliação de frequência.
-- Sugestões analíticas de ajuste do marco usando somente dados agregados, sem publicação automática.
-- Experimentos controlados de linguagem e horário.
-- Preferências de comunicação escolhidas pelo paciente.
-- Integração com campanhas, sem transformar lembrete em disparo em massa.
-
-## 20. Requisitos não funcionais
-
-### 20.1 Segurança e privacidade
-
-- RLS por organização e workspace.
-- Autorização no banco/backend, nunca apenas na interface.
-- Segredos e tokens somente no servidor.
-- Criptografia, retenção e acesso compatíveis com dado de saúde sensível.
-- Logs sanitizados, sem conteúdo clínico ou contato completo.
-- Auditoria de consulta, alteração, aprovação, pausa e envio.
-- Exclusão e retenção reconciliáveis sem quebrar trilha obrigatória.
-
-### 20.2 Confiabilidade
-
-- Job com lease, heartbeat, retry limitado, dead-letter e reconciliação.
-- Idempotência interna e externa.
-- Processamento independente da página aberta.
-- Monitoramento de backlog, atraso, duplicidade, falha de gate e provedor.
-- Relógio e timezone testados; sem depender do timezone do navegador.
-
-### 20.3 Desempenho
-
-- 99% das expectativas do dia avaliadas dentro da janela operacional local.
-- Consulta do painel paginada e filtrável.
-- Reprocessamento incremental por evento, sem varrer toda a base a cada atualização.
-
-### 20.4 Acessibilidade e UX
-
-- Estados não dependem apenas de cor.
-- Operação completa por teclado e em viewport móvel.
-- Motivos de bloqueio e ações corretivas em linguagem clara.
-- Nenhum botão de envio disponível quando gate obrigatório estiver bloqueado.
-
-## 21. Métricas de sucesso
-
-### 21.1 Proteção e confiabilidade
-
-- 100% dos lembretes ativados com `activation_on = renewal_on - 14 dias`.
-- Zero mensagens duplicadas para a mesma chave idempotente.
-- Zero mensagens para identidade ambígua, opt-out ou canal bloqueado.
-- 100% dos efeitos externos com regra, evento, template, gate e tentativa auditáveis.
-- 100% dos opt-outs aplicados antes da próxima tentativa.
-- Pelo menos 99% dos candidatos do dia processados na janela operacional.
-
-Qualquer contato com pessoa errada, opt-out desrespeitado ou vazamento entre organizações é incidente crítico e pausa o automático supervisionado.
-
-### 21.2 Produto
-
-- Percentual de procedimentos concluídos com regra publicada.
-- Percentual de expectativas bloqueadas por identidade, variante, consentimento ou contato.
-- Taxa de entrega por canal.
-- Taxa de resposta em até 14 dias após o envio.
-- Taxa de pedidos de reavaliação e agendamentos vinculados.
-- Taxa de retornos concluídos dentro da janela de atribuição publicada.
-- Opt-out e reclamação por mil mensagens.
-
-O primeiro ciclo de 30 dias será usado para estabelecer baseline. Metas comerciais só serão publicadas depois de existir volume mínimo, atribuição e reconciliação suficientes; não serão inventadas a partir do resumo financeiro.
-
-## 22. Critérios de aceite
-
-1. **D-14 exato:** dado procedimento concluído em 17/08/2026 e regra aprovada com marco de 4 meses, o motor calcula `renewal_on = 17/12/2026` e `activation_on = 03/12/2026`.
-2. **Fim de mês:** se o dia não existir no mês de destino, o marco usa o último dia válido antes de subtrair 14 dias.
-3. **Ano bissexto:** o cálculo é determinístico ao atravessar fevereiro.
-4. **Faixa sem marco:** faixa 4–6 meses sem `renewal_milestone_months` publicado não produz lembrete.
-5. **Categoria incompleta:** Toxina, Bioestímulo, Fio liso ou Linear Z sem os atributos mínimos fica bloqueado.
-6. **NF pendente:** venda pendente sem atendimento concluído não cria ciclo.
-7. **Resumo agregado:** total por procedimento não cria pessoa, expectativa ou mensagem.
-8. **Nome isolado:** pessoa identificada apenas por nome pode aparecer em prévia bloqueada, mas nunca é contatada.
-9. **Homônimo:** dois registros com o mesmo nome não são unidos automaticamente.
-10. **Retry idempotente:** executar o job duas vezes gera um único candidato e no máximo um efeito externo.
-11. **Parcela repetida:** repetir linhas financeiras do mesmo evento não cria outro ciclo.
-12. **Novo procedimento:** novo evento concluído da mesma relação cancela o lembrete não enviado e cria expectativa com nova data.
-13. **Evento antigo:** importar depois um evento mais antigo não retrocede a âncora atual.
-14. **Retoque toxina:** sem política aprovada, o retoque não reinicia o ciclo.
-15. **Agendamento futuro:** agendamento válido compatível impede despacho automático e coloca o item em espera.
-16. **Opt-out antes do envio:** opt-out registrado depois da aprovação cancela a reserva antes do handoff.
-17. **Canal indisponível:** erro de gate ou provedor não causa troca silenciosa de canal nem envio retroativo.
-18. **Atraso do job:** falha no dia D-14 produz `overdue_review`, nunca envio automático tardio.
-19. **Regra substituída:** nova versão não reescreve lembretes já enviados; eventos futuros usam a versão vigente.
-20. **Múltiplos itens no dia:** duas expectativas da mesma pessoa ativadas no mesmo dia geram uma única ação neutra vinculada a ambas.
-21. **Isolamento:** usuário de outra organização ou workspace não consegue ler, aprovar, pausar ou enviar o lembrete.
-22. **Mensagem segura:** o template padrão não expõe o procedimento nem afirma necessidade de repetição.
-23. **Automático supervisionado:** somente workspace com piloto aprovado, feature flag e todos os gates pode despachar sem aprovação individual.
-24. **Auditoria:** cada decisão pode ser reproduzida por evento, regra, versão, gates, ator/política, template e tentativa.
-
-## 23. Cenários de teste do piloto
-
-O conjunto sintético deverá cobrir:
-
-- Toxina com produto/indicação completos e incompletos.
-- Bioestímulo com distinção entre série e manutenção.
-- Fio liso com materiais diferentes.
-- Linear Z com e sem cartucho, profundidade, modo e finalidade.
-- Retoque toxina sem política.
-- Procedimento no último dia do mês e ano bissexto.
-- Duas parcelas para um único evento e reimportação do lote.
-- Evento antigo chegando depois.
-- Novo procedimento antes de D-14 e no próprio D-14.
-- Agendamento futuro, cancelamento e no-show.
-- Opt-out geral, específico e desconhecido.
-- Telefone inválido, não verificado e compartilhado.
-- Homônimos e identidade em revisão.
-- Duas organizações com IDs semelhantes.
-- Worker duplicado, timeout depois de aceitar no provedor e reconciliação.
-- Pausa emergencial por regra e por workspace.
-
-## 24. Fases recomendadas
-
-### Fase 0 — Aprovação e preparação
-
-- Validar marcos clínicos, produtos, materiais e variantes.
-- Definir comportamento de retoques.
-- Mapear aliases para catálogo canônico.
-- Validar base legal, consentimento, retenção e template.
-- Provar que o evento `completed` é confiável e separado da NF pendente.
-
-### Fase 1 — Prévia não acionável
-
-- Calcular com dados sintéticos e/ou base local protegida.
-- Revisar datas, bloqueios, duplicidades e volume.
-- Nenhum handoff ou envio.
-
-### Fase 2 — Piloto assistido
-
-- Pequeno volume e um workspace.
-- Revisão individual antes do handoff.
-- WhatsApp oficial e opt-out comprovados ponta a ponta.
-- Monitoramento diário e pausa imediata.
-
-### Fase 3 — Automático supervisionado
-
-- Liberar apenas depois dos critérios de saída do piloto.
-- Regras e templates pré-aprovados.
-- Exceções permanecem assistidas.
-- Auditoria e reconciliação contínuas.
-
-### Fase 4 — Otimização
-
-- Estabelecer baseline e metas.
-- Avaliar agregação, horário, preferências e atribuição.
-- Propor novas regras sem alteração autônoma.
-
-## 25. Critérios de saída do piloto
-
-- Zero contato com identidade errada ou opt-out.
-- Zero duplicidade de envio.
-- 100% dos candidatos auditáveis.
-- Regras clínicas e templates sem pendências.
-- Canal oficial, webhook, status e reconciliação comprovados.
-- Pausa emergencial testada.
-- Backlog e atrasos dentro do SLA publicado.
-- Amostra revisada sem divergência entre evento concluído, marco e D-14.
-- Responsáveis clínico, operacional, técnico e de privacidade aprovam a mudança de modo.
-
-## 26. Riscos e mitigação
-
-**Usar venda como procedimento realizado.** Mitigação: exigir evento canônico `completed`; NF pendente nunca inicia ciclo.
-
-**Transformar duração estimada em recomendação individual.** Mitigação: separar `maintenance_reassessment`, usar linguagem de reavaliação e exigir aprovação clínica.
-
-**Aplicar prazo genérico a produtos diferentes.** Mitigação: produto, material, indicação, região, protocolo e IFU/fonte aplicável fazem parte da regra.
-
-**Linear Z sem granularidade suficiente.** Mitigação: bloquear até existir cartucho/ponteira, profundidade, modo, área e finalidade.
-
-**Contato com homônimo ou telefone errado.** Mitigação: identidade canônica, contato verificado, fila de conflitos e falha fechada.
-
-**Exposição de dado sensível no WhatsApp.** Mitigação: template neutro por padrão, mínimo de dados e aprovação de privacidade.
-
-**Duplicidade por parcelas, retries ou concorrência.** Mitigação: granularidade por evento/item, chaves idempotentes, reserva única e reconciliação.
-
-**Mensagem depois de novo procedimento ou agendamento.** Mitigação: rechecagem em D-14 e antes do handoff; supersessão e hold.
-
-**Envio retroativo após indisponibilidade.** Mitigação: `overdue_review`; nenhuma recuperação automática com efeito externo.
-
-**Automação antes de integração real.** Mitigação: fases separadas, feature flag e gate de prova ponta a ponta.
-
-## 27. Questões em aberto
-
-### 27.1 Bloqueadoras antes da publicação de regras
-
-1. **[Responsável clínico]** Aprovar um marco exato por produto, indicação e protocolo; confirmar se 4 meses poderá ser o rascunho de Toxina nos casos definidos pela clínica.
-2. **[Responsável clínico]** Desmembrar Bioestímulo por produto/material e separar série de sessões de manutenção.
-3. **[Responsável clínico]** Desmembrar Fio liso por marca, material, tipo, região e fonte aplicável; validar ou rejeitar a faixa de 18–24 meses.
-4. **[Responsável clínico]** Mapear cartucho/ponteira, profundidade, modo, área, finalidade e protocolo do Linear Z.
-5. **[Responsável clínico]** Definir se `Retoque toxina` reinicia, mantém ou complementa o ciclo.
-6. **[Dados/Operações]** Definir qual evento prova procedimento concluído e como corrige/cancela esse estado.
-7. **[Dados/Privacidade]** Definir evidência mínima de identidade e pertencimento do telefone.
-8. **[Privacidade/Jurídico]** Validar finalidade, base legal, consentimento, template, opt-out, frequência e retenção.
-9. **[Engenharia]** Confirmar o sistema operacional fonte de verdade; não implementar produção no classificador local por conveniência.
-
-### 27.2 Não bloqueadoras para a prévia
-
-10. **[Operações]** Definir horário local preferencial e dias silenciosos.
-11. **[Produto]** Definir janela de atribuição entre lembrete, resposta, agendamento e retorno.
-12. **[Operações]** Definir como consolidar expectativas próximas sem perder D-14 analítico.
-13. **[Produto/Clínica]** Decidir se o nome do procedimento poderá aparecer em algum template futuro.
-
-## 28. Dependências
-
-- Catálogo canônico de procedimentos, produtos, materiais e variantes.
-- Base promovida e reconciliada.
-- Pessoa canônica e contato verificado.
-- Consentimentos, opt-outs e suppression list.
-- Evento confiável de procedimento concluído.
-- Job queue, timeline e auditoria.
-- Policy gate de canal e frequência.
-- WhatsApp Business Platform oficial comprovado ponta a ponta.
-- Agenda, se o hold por agendamento for ativado.
-- RLS e permissões por organização/workspace.
-
-## 29. Definição de pronto
-
-O recurso só poderá ser chamado de “lembrete automático em produção” quando:
-
-- as regras clínicas por produto/variante estiverem publicadas;
-- o cálculo D-14 tiver testes determinísticos;
-- a base canônica, identidade, consentimento e contato estiverem comprovados;
-- o piloto assistido terminar sem incidente crítico;
-- o canal oficial tiver envio, status, opt-out e reconciliação reais;
-- o automático supervisionado estiver autorizado, monitorado e pausável;
-- os critérios de aceite, segurança, RLS e auditoria tiverem evidência registrada.
-
-Até lá, o resultado correto é classificar o módulo como **PRD**, **prévia não acionável** ou **piloto assistido**, conforme a fase alcançada.
-
-## 30. Referências do projeto
-
-- `Upload_Dra_Marcella_Base.md`, resumo fornecido da base da Dra. Marcella.
-- `Orquestra_IA_Documento_Mestre_Continuidade_Tecnica (2).docx`, especialmente modelo de dados, consentimento, automação, agenda, jobs, WhatsApp e política de autonomia.
-- `PRD_Publicos_Inteligentes_e_Clusterizacao_Adaptativa.md`, especialmente gates e `ReturnWindowDefinition`.
-- `PRD_Onboarding_Inteligente_de_Dados.md`, para promoção, reconciliação, identidade e procedência.
-
-## 31. Referências clínicas, regulatórias e de privacidade
-
-Consultadas em 17/08/2026. Servem para governar a configuração; não substituem avaliação da responsável clínica, bula/IFU vigente do produto efetivamente usado nem orientação jurídica.
-
-- [Anvisa — alerta sobre toxina botulínica](https://www.gov.br/anvisa/pt-br/assuntos/noticias-anvisa/2025/anvisa-alerta-sobre-risco-de-botulismo-apos-administracao-de-toxina-botulinica/), 12/03/2025.
-- [AbbVie — bula brasileira BOTOX](https://www.abbvie.com.br/content/dam/abbvie-com2/br/documents/Bula_BOTOX_VPS.pdf), revisão/notificação indicada em 05/01/2026.
-- [Jeisys Brasil — LinearZ](https://tecnologia.jeisys.com.br/compra-linearz-lp) e [Jeisys global — customização do LinearZ](https://www.jeisys.com/who_we_are/newsroom.php?boardid=news_room&idx=132&mode=view&offset=0&sk=&sw=).
-- [Sociedade Brasileira de Dermatologia — informe sobre ultrassom microfocado](https://www.sbd.org.br/mm/cms/2021/11/12/informesbd-ultrassom-microfocado.pdf).
-- [Galderma — Sculptra](https://www.galderma.com/sculptra) e [instruções de uso](https://www.galderma.com/sites/default/files/2025-03/IFU_Sculptra-Jul_2022.pdf).
-- [Merz — instruções de uso Radiesse por mercado](https://www.ifu.merzaesthetics.com/products/) e [versão brasileira](https://www.ifu.merzaesthetics.com/products/versions/radiesse-lidocaine.html?cdg=br).
-- [MINT PDO — informações do fabricante para pacientes](https://www.mintpdo.com/for-patients), usada apenas como exemplo de produto PDO, não como regra para outras marcas ou materiais.
-- [CFM — Resolução nº 2.336/2023](https://sistemas.cfm.org.br/normas/arquivos/resolucoes/BR/2023/2336_2023.pdf), publicidade e comunicação médica.
-- [LGPD — Lei nº 13.709/2018](https://www.planalto.gov.br/ccivil_03/_ato2015-2018/2018/lei/l13709compilado.htm) e [ANPD — direitos dos titulares](https://www.gov.br/anpd/pt-br/assuntos/titular-de-dados-1/direito-dos-titulares).
+## 21. Definição de pronto
+
+O PRD estará pronto para implementação quando:
+
+- as pendências P01–P15 tiverem decisão registrada;
+- as regras do piloto estiverem `PUBLISHED` e versionadas;
+- identidade, consentimento e restrições estiverem validados;
+- template e canal oficial estiverem aprovados;
+- cálculo D-14, idempotência e reconciliação tiverem testes aprovados;
+- existir plano de piloto assistido, monitoramento, auditoria e pausa;
+- o modo continuar `INTERNAL_ONLY` até autorização externa separada.
+
+Até lá, este documento é a especificação canônica do produto e a base para simulação, revisão clínica e planejamento técnico.
