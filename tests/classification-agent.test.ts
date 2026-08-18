@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ClassificationProposal, ClassificationResult } from "../src/domain/contracts.js";
 import type { ClassificationModel, ClassificationModelInput } from "../src/ports.js";
 import { DeterministicClassificationModel } from "../src/infrastructure/models/deterministic-classification-model.js";
+import { ClosedProviderGate } from "../src/infrastructure/gates/static-provider-gate.js";
 import {
   addMacroPayload,
   classifierWith,
@@ -145,6 +146,49 @@ describe("FileClassificationAgent v1", () => {
     );
   });
 
+  it("preserva uma linha vazia quando o bloco seguinte mantém a estrutura principal", async () => {
+    const directory = await temporaryBatch();
+    await writeWorkbook(directory, "historico_com_lacuna.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Histórico");
+      sheet.addRow(["Nome do Paciente", "Data Atendimento", "Valor Total", "Observação"]);
+      sheet.addRow(["Ana Souza", new Date("2026-07-10T00:00:00Z"), 100]);
+      sheet.addRow([]);
+      sheet.addRow(["Beatriz Lima", new Date("2026-08-10T00:00:00Z"), 200, "observação"]);
+    });
+
+    const result = await classifierWith().classifyDirectory(directory, defaultRequest());
+
+    expect(result.status, JSON.stringify(result)).toBe("awaiting_review");
+    if (result.status !== "awaiting_review") return;
+    expect(result.manifest.files[0]?.sheets[0]?.alerts).toContainEqual(
+      expect.objectContaining({ code: "INTERIOR_EMPTY_ROWS_PRESERVED", severity: "warning" }),
+    );
+    expect(result.plan.warnings.map((warning) => warning.code)).toContain(
+      "INTERIOR_EMPTY_ROWS_PRESERVED",
+    );
+  });
+
+  it("mantém bloqueio quando uma lacuna introduz cabeçalho repetido", async () => {
+    const directory = await temporaryBatch();
+    await writeWorkbook(directory, "dois_blocos.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Dados");
+      sheet.addRow(["Nome do Paciente", "Data Atendimento", "Valor Total"]);
+      sheet.addRow(["Ana Souza", new Date("2026-07-10T00:00:00Z"), 100]);
+      sheet.addRow([]);
+      sheet.addRow(["Nome do Paciente", "Data Atendimento", "Valor Total"]);
+      sheet.addRow(["Beatriz Lima", new Date("2026-08-10T00:00:00Z"), 200]);
+    });
+
+    const result = await classifierWith().classifyDirectory(directory, defaultRequest());
+
+    expect(result.status).toBe("blocked");
+    if (result.status !== "blocked") return;
+    expect(result.errorCode).toBe("MANIFEST_BLOCKED");
+    expect(result.manifest?.files[0]?.sheets[0]?.alerts).toContainEqual(
+      expect.objectContaining({ code: "POSSIBLE_MULTIPLE_BLOCKS", severity: "blocking" }),
+    );
+  });
+
   it("bloqueia um XLSX renomeado que contenha macro", async () => {
     const directory = await temporaryBatch();
     const path = await writeWorkbook(directory, "malicioso.xlsx", (workbook) => {
@@ -170,9 +214,9 @@ describe("FileClassificationAgent v1", () => {
     await writeCsv(directory, "pessoas.csv", "Nome do Paciente\nAna Souza\n");
     const model = new CountingModel(new DeterministicClassificationModel());
 
-    const result = await classifierWith(model).classifyDirectory(
+    const result = await classifierWith(model, new ClosedProviderGate()).classifyDirectory(
       directory,
-      defaultRequest({ providerApproval: { status: "not_approved" } }),
+      defaultRequest(),
     );
 
     expect(result.status).toBe("blocked");
@@ -187,6 +231,7 @@ describe("FileClassificationAgent v1", () => {
     await writeCsv(directory, "pessoas.csv", "Nome do Paciente\nAna Souza\n");
     const invalidModel: ClassificationModel = {
       providerId: "invalid-structural",
+      provider: testProvider("invalid-structural"),
       async classify() {
         return { status: "looks-valid-to-a-human" };
       },
@@ -205,6 +250,64 @@ describe("FileClassificationAgent v1", () => {
     const result = await classifierWith(invalidModel).classifyDirectory(directory, defaultRequest());
 
     expect(result).toMatchObject({ status: "failed", errorCode: "MODEL_SEMANTIC_INVALID" });
+  });
+
+  it("reinsere gates determinísticos que um modelo tenta omitir", async () => {
+    const nameOnlyDirectory = await temporaryBatch();
+    await writeCsv(
+      nameOnlyDirectory,
+      "pessoas.csv",
+      "Nome do Paciente;Data Atendimento\nAna Souza;01/08/2026\n",
+    );
+    const identityResult = await classifierWith(new OmittingSafetyModel()).classifyDirectory(
+      nameOnlyDirectory,
+      defaultRequest({ batchId: "batch_identity_omission" }),
+    );
+
+    expect(identityResult.status).toBe("awaiting_review");
+    if (identityResult.status === "awaiting_review") {
+      expect(identityResult.plan.identityReviewRequests).toHaveLength(1);
+      expect(identityResult.plan.warnings.map((warning) => warning.code)).toContain(
+        "NAME_ONLY_IDENTITY_IS_PROVISIONAL",
+      );
+    }
+
+    const financialDirectory = await temporaryBatch();
+    await writeCsv(
+      financialDirectory,
+      "financeiro.csv",
+      "Nome do Paciente;Valor Total\nAna Souza;1,234\n",
+    );
+    const financialResult = await classifierWith(new OmittingSafetyModel()).classifyDirectory(
+      financialDirectory,
+      defaultRequest({ batchId: "batch_financial_omission" }),
+    );
+
+    expect(financialResult.status).toBe("blocked");
+    if (financialResult.status === "blocked" && financialResult.plan) {
+      expect(financialResult.plan.blockers.map((blocker) => blocker.code)).toContain(
+        "AMBIGUOUS_FINANCIAL_NUMBER",
+      );
+    }
+  });
+
+  it("impede o modelo de transformar campo desconhecido em identidade sem revisão local", async () => {
+    const directory = await temporaryBatch();
+    await writeCsv(directory, "nomes.csv", "Nome Completo\nAna Souza\n");
+
+    const result = await classifierWith(new InventingIdentityModel()).classifyDirectory(
+      directory,
+      defaultRequest({ batchId: "batch_identity_transition" }),
+    );
+
+    expect(result.status).toBe("awaiting_review");
+    if (result.status !== "awaiting_review") return;
+    expect(result.plan.columnMappings).toEqual([
+      expect.objectContaining({ disposition: "custom_field_candidate" }),
+    ]);
+    expect(result.plan.validations).toContainEqual(
+      expect.objectContaining({ rule: "identity_safety", passed: true }),
+    );
   });
 
   it("reutiliza o resultado idempotente do mesmo lote e não chama o modelo duas vezes", async () => {
@@ -226,9 +329,11 @@ describe("FileClassificationAgent v1", () => {
 class CountingModel implements ClassificationModel {
   public calls = 0;
   public readonly providerId: string;
+  public readonly provider: ClassificationModel["provider"];
 
   public constructor(private readonly delegate: ClassificationModel) {
     this.providerId = delegate.providerId;
+    this.provider = delegate.provider;
   }
 
   public async classify(input: ClassificationModelInput, signal: AbortSignal): Promise<unknown> {
@@ -240,6 +345,7 @@ class CountingModel implements ClassificationModel {
 class MutatingModel implements ClassificationModel {
   public readonly providerId = "invalid-semantic";
   private readonly delegate = new DeterministicClassificationModel();
+  public readonly provider = testProvider(this.providerId);
 
   public async classify(input: ClassificationModelInput, signal: AbortSignal): Promise<unknown> {
     const valid = (await this.delegate.classify(input, signal)) as ClassificationProposal;
@@ -253,6 +359,59 @@ class MutatingModel implements ClassificationModel {
       ],
     };
   }
+}
+
+class OmittingSafetyModel implements ClassificationModel {
+  public readonly providerId = "unsafe-omission-model";
+  public readonly provider = testProvider(this.providerId);
+
+  public async classify(input: ClassificationModelInput): Promise<unknown> {
+    const baseline = input.deterministicBaseline;
+    if (!baseline) throw new Error("baseline ausente");
+    return {
+      ...baseline,
+      identityReviewRequests: [],
+      reviewItems: [],
+      blockers: [],
+      warnings: [],
+    };
+  }
+}
+
+class InventingIdentityModel implements ClassificationModel {
+  public readonly providerId = "inventing-identity-model";
+  public readonly provider = testProvider(this.providerId);
+
+  public async classify(input: ClassificationModelInput): Promise<unknown> {
+    const baseline = input.deterministicBaseline;
+    if (!baseline) throw new Error("baseline ausente");
+    const mapping = baseline.columnMappings[0];
+    if (!mapping) return baseline;
+    return {
+      ...baseline,
+      columnMappings: [
+        {
+          mappingId: mapping.mappingId,
+          source: mapping.source,
+          inferredType: mapping.inferredType,
+          confidenceClass: "supported",
+          evidenceIds: mapping.evidenceIds,
+          disposition: "canonical",
+          canonicalFieldId: "person.full_name",
+        },
+      ],
+      identityReviewRequests: [],
+      reviewItems: [],
+      warnings: [],
+    };
+  }
+}
+
+function testProvider(providerId: string): ClassificationModel["provider"] {
+  return {
+    ...new DeterministicClassificationModel().provider,
+    providerId,
+  };
 }
 
 function planHash(result: ClassificationResult): string | undefined {

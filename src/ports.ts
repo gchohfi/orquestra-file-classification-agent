@@ -7,15 +7,35 @@ import type {
 export type ClassificationModelInput = {
   manifest: WorkbookManifest;
   catalog: CanonicalSchemaCatalog;
+  deterministicBaseline?: ClassificationProposal;
 };
+
+export type ClassificationProviderDescriptor = Readonly<{
+  providerId: string;
+  transport: "local" | "openai_responses" | "disabled";
+  endpointOrigin: string;
+  model: string;
+  reasoningEffort: string;
+  store: boolean;
+  background: boolean;
+  promptVersion: string;
+  schemaVersion: string;
+  policyVersion: string;
+}>;
 
 export interface ClassificationModel {
   readonly providerId: string;
+  readonly provider: ClassificationProviderDescriptor;
   classify(input: ClassificationModelInput, signal: AbortSignal): Promise<unknown>;
 }
 
+export type ApprovedProviderRegistration = Readonly<{
+  approvalId: string;
+  provider: ClassificationProviderDescriptor;
+}>;
+
 export interface ApprovedProviderGate {
-  assertApproved(providerId: string, approvalId: string | undefined): Promise<void>;
+  assertApproved(provider: ClassificationProviderDescriptor): Promise<ApprovedProviderRegistration>;
 }
 
 export interface ClassificationRepository {

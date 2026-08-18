@@ -5,6 +5,7 @@ import {
   ClassifyBatchRequestSchema,
   ClassificationResultSchema,
   type CanonicalSchemaCatalog,
+  type ClassificationProposal,
   type ClassificationResult,
   type ClassifyBatchRequest,
   type WorkbookManifest,
@@ -20,7 +21,9 @@ import type {
 import { sha256 } from "../shared/hash.js";
 import { canonicalJson } from "../shared/hash.js";
 import { buildManifest } from "./build-manifest.js";
+import { enforceDeterministicSafety } from "./enforce-deterministic-safety.js";
 import { parseAndBuildPlan } from "./validate-proposal.js";
+import { DeterministicClassificationModel } from "../infrastructure/models/deterministic-classification-model.js";
 
 type BatchClassifierDependencies = {
   catalog: CanonicalSchemaCatalog;
@@ -33,6 +36,7 @@ type BatchClassifierDependencies = {
 
 export class BatchClassifier {
   private readonly inFlight = new Map<string, Promise<ClassificationResult>>();
+  private readonly safetyModel = new DeterministicClassificationModel();
 
   public constructor(private readonly dependencies: BatchClassifierDependencies) {}
 
@@ -57,6 +61,7 @@ export class BatchClassifier {
   ): Promise<ClassificationResult> {
     let manifest: WorkbookManifest | undefined;
     const correlationId = randomUUID();
+    const batchRef = correlationId;
     try {
       signal.throwIfAborted();
       const limits = this.dependencies.limits ?? DEFAULT_LIMITS;
@@ -69,12 +74,12 @@ export class BatchClassifier {
         limits,
       );
       this.dependencies.logger.info("classification.manifest_built", {
-        batchId: request.batchId,
+        batchRef,
         files: manifest.files.length,
         bytes: manifest.totalBytes,
       });
 
-      if (manifest.files.some((file) => file.alerts.some((alert) => alert.severity === "blocking"))) {
+      if (hasBlockingManifestAlert(manifest)) {
         return ClassificationResultSchema.parse({
           status: "blocked",
           manifest,
@@ -82,17 +87,14 @@ export class BatchClassifier {
           errorCode: "MANIFEST_BLOCKED",
         });
       }
-      if (request.providerApproval.status !== "approved") {
-        return ClassificationResultSchema.parse({
-          status: "blocked",
-          manifest,
-          plan: null,
-          errorCode: "AI_PROVIDER_NOT_APPROVED",
-        });
+      if (this.dependencies.model.providerId !== this.dependencies.model.provider.providerId) {
+        throw new ClassificationError(
+          "AI_PROVIDER_NOT_APPROVED",
+          "A identidade do adapter diverge da configuração aprovada.",
+        );
       }
-      await this.dependencies.providerGate.assertApproved(
-        this.dependencies.model.providerId,
-        request.providerApproval.approvalId,
+      const approvedProvider = await this.dependencies.providerGate.assertApproved(
+        this.dependencies.model.provider,
       );
 
       const idempotencyKey = sha256(
@@ -100,20 +102,33 @@ export class BatchClassifier {
           sha256(canonicalJson(manifest)),
           this.dependencies.catalog.catalogVersion,
           CLASSIFIER_VERSION,
-          this.dependencies.model.providerId,
+          sha256(canonicalJson(this.dependencies.model.provider)),
         ].join("\u001f"),
       );
       let proposal = await this.dependencies.repository.get(idempotencyKey);
       if (!proposal) {
-        const rawProposal = await this.dependencies.model.classify(
+        const deterministicBaseline = await this.safetyModel.classify(
           { manifest, catalog: this.dependencies.catalog },
           signal,
         );
-        const built = parseAndBuildPlan(rawProposal, manifest, this.dependencies.catalog, {
+        const rawProposal = await this.dependencies.model.classify(
+          {
+            manifest,
+            catalog: this.dependencies.catalog,
+            deterministicBaseline: deterministicBaseline as ClassificationProposal,
+          },
+          signal,
+        );
+        const safeProposal = enforceDeterministicSafety(
+          rawProposal,
+          deterministicBaseline as ClassificationProposal,
+          this.dependencies.catalog,
+        );
+        const built = parseAndBuildPlan(safeProposal, manifest, this.dependencies.catalog, {
           organizationId: request.organizationId,
           workspaceId: request.workspaceId,
           providerId: this.dependencies.model.providerId,
-          providerApprovalId: request.providerApproval.approvalId!,
+          providerApprovalId: approvedProvider.approvalId,
         });
         proposal = built.proposal;
         await this.dependencies.repository.put(idempotencyKey, proposal);
@@ -124,10 +139,10 @@ export class BatchClassifier {
         organizationId: request.organizationId,
         workspaceId: request.workspaceId,
         providerId: this.dependencies.model.providerId,
-        providerApprovalId: request.providerApproval.approvalId!,
+        providerApprovalId: approvedProvider.approvalId,
       });
       this.dependencies.logger.info("classification.plan_validated", {
-        batchId: request.batchId,
+        batchRef,
         status: plan.status,
         blockers: plan.blockers.length,
         reviewItems: plan.reviewItems.length,
@@ -140,7 +155,7 @@ export class BatchClassifier {
     } catch (error) {
       const code = errorCodeOf(error);
       this.dependencies.logger.error("classification.failed", {
-        batchId: request.batchId,
+        batchRef,
         errorCode: code,
         correlationId,
       });
@@ -150,4 +165,12 @@ export class BatchClassifier {
       return ClassificationResultSchema.parse({ status: "failed", errorCode: code, correlationId });
     }
   }
+}
+
+function hasBlockingManifestAlert(manifest: WorkbookManifest): boolean {
+  return manifest.files.some(
+    (file) =>
+      file.alerts.some((alert) => alert.severity === "blocking") ||
+      file.sheets.some((sheet) => sheet.alerts.some((alert) => alert.severity === "blocking")),
+  );
 }

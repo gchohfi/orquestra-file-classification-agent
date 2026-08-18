@@ -108,7 +108,15 @@ export function parseAndBuildPlan(
     reviewItems: proposal.reviewItems,
     blockers: proposal.blockers,
     warnings: proposal.warnings,
-    status: proposal.blockers.length > 0 || unresolvedCells > 0 ? "blocked" as const : "awaiting_review" as const,
+    status:
+      proposal.blockers.length > 0 ||
+      unresolvedCells > 0 ||
+      proposal.columnMappings.some((mapping) => mapping.confidenceClass === "blocking") ||
+      proposal.sourceBlocks.some((block) =>
+        block.entityCandidates.some((candidate) => candidate.assessment === "blocking"),
+      )
+        ? "blocked" as const
+        : "awaiting_review" as const,
   };
   const plan = ClassificationPlanDraftSchema.parse({
     ...withoutHash,
@@ -149,11 +157,12 @@ function validateProposalReferences(
   assertUnique(proposal.columnMappings.map((mapping) => mapping.mappingId), "mapeamento");
   assertUnique(proposal.sourceGroups.map((group) => group.groupId), "grupo");
   assertUnique(proposal.relationshipCandidates.map((relation) => relation.relationshipId), "relação");
+  assertUnique(proposal.identityReviewRequests.map((request) => request.requestId), "revisão de identidade");
   assertUnique(proposal.evidence.map((item) => item.evidenceId), "evidência");
   assertUnique(proposal.reviewItems.map((item) => item.reviewItemId), "item de revisão");
 
   const blockIds = new Set(proposal.sourceBlocks.map((block) => block.blockId));
-  const entityIds = new Set(catalog.entities.map((entity) => entity.entityId));
+  const entities = new Map(catalog.entities.map((entity) => [entity.entityId, entity]));
   const fieldIds = new Set(catalog.fields.map((field) => field.fieldId));
 
   for (const block of proposal.sourceBlocks) {
@@ -172,7 +181,11 @@ function validateProposalReferences(
       }
     }
     for (const candidate of block.entityCandidates) {
-      if (!entityIds.has(candidate.entityId)) throw semanticError("Candidato referencia entidade inexistente.");
+      const entity = entities.get(candidate.entityId);
+      if (!entity) throw semanticError("Candidato referencia entidade inexistente.");
+      if (candidate.grain !== entity.grain) {
+        throw semanticError("A granularidade candidata diverge da entidade canônica.");
+      }
     }
   }
   if (blockIds.size !== indexes.sheets.size) {
@@ -345,7 +358,8 @@ function expectedRowCoverage(indexes: ManifestIndexes, mappings: ColumnMapping[]
     const unresolvedColumns = new Set(
       mappings
         .filter((mapping) => mapping.source.sheetId === sheetId && mapping.disposition === "unresolved")
-        .map((mapping) => mapping.source.columnId),
+        .map((mapping) => mapping.source.columnId)
+        .filter((columnId): columnId is string => typeof columnId === "string"),
     );
     const rows = new Map(sheet.rows.map((row) => [row.rowNumber, row]));
     let current: ClassificationProposal["rowCoverage"][number] | undefined;
@@ -367,7 +381,7 @@ function expectedRowCoverage(indexes: ManifestIndexes, mappings: ColumnMapping[]
 
 function rowDisposition(
   row: RowProfile,
-  unresolvedColumns: Set<string | undefined>,
+  unresolvedColumns: Set<string>,
 ): "classified" | "unresolved" {
   return row.nonEmptyColumnIds.some((columnId) => unresolvedColumns.has(columnId)) ? "unresolved" : "classified";
 }
@@ -384,9 +398,9 @@ function assertSourceExists(source: SourceReference, indexes: ManifestIndexes): 
       throw semanticError("Referência aponta para coluna inexistente ou de outra aba.");
     }
   }
-  if (source.rowStart !== undefined && source.rowEnd !== undefined && source.sheetId) {
+  if (source.rowStart != null && source.rowEnd != null && source.sheetId) {
     const sheet = indexes.sheets.get(source.sheetId)!;
-    if (source.rowEnd > Math.max(sheet.physicalRowCount, source.rowStart)) {
+    if (source.rowStart > sheet.physicalRowCount || source.rowEnd > sheet.physicalRowCount) {
       throw semanticError("Referência de linha excede a origem.");
     }
   }
