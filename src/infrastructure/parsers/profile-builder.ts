@@ -45,11 +45,18 @@ type CellInspection = {
   externalLink: boolean;
 };
 
+type RowShape = {
+  rowNumber: number;
+  nonEmptyColumnIndexes: number[];
+  matchingHeaderCount: number;
+};
+
 export class SheetProfileBuilder {
   private headerRow: number | null = null;
   private physicalRowCount = 0;
   private readonly columns = new Map<number, MutableColumn>();
   private readonly rows: RowProfile[] = [];
+  private readonly rowShapes: RowShape[] = [];
   private readonly alerts: SourceAlert[] = [];
 
   public constructor(
@@ -116,6 +123,15 @@ export class SheetProfileBuilder {
       hasFormula,
       hasInstructionLikeContent,
     });
+    this.rowShapes.push({
+      rowNumber,
+      nonEmptyColumnIndexes: nonEmptyIndexes.map(({ index }) => index).sort((a, b) => a - b),
+      matchingHeaderCount: nonEmptyIndexes.filter(({ index }) => {
+        const normalizedValue = normalizeHeader(headerText(values[index - 1]));
+        const normalizedHeader = this.columns.get(index)?.normalizedHeader ?? "";
+        return normalizedHeader.length > 0 && normalizedValue === normalizedHeader;
+      }).length,
+    });
   }
 
   public finalize(): SheetManifest {
@@ -169,13 +185,14 @@ export class SheetProfileBuilder {
       }
     }
 
-    const dataRowNumbers = this.rows.map((row) => row.rowNumber).sort((a, b) => a - b);
-    if (hasInteriorGap(dataRowNumbers)) {
+    for (const gap of analyzeInteriorGaps(this.rowShapes)) {
       this.alerts.push({
-        code: "POSSIBLE_MULTIPLE_BLOCKS",
-        severity: "blocking",
-        source,
-        detail: "Existem linhas vazias entre blocos preenchidos; a granularidade requer revisão.",
+        code: gap.blocking ? "POSSIBLE_MULTIPLE_BLOCKS" : "INTERIOR_EMPTY_ROWS_PRESERVED",
+        severity: gap.blocking ? "blocking" : "warning",
+        source: { ...source, rowStart: gap.rowStart, rowEnd: gap.rowEnd },
+        detail: gap.blocking
+          ? "A lacuna separa estruturas incompatíveis ou um cabeçalho repetido; a granularidade requer revisão."
+          : "Linhas vazias internas foram preservadas; as linhas adjacentes mantêm estrutura compatível.",
       });
     }
 
@@ -381,11 +398,36 @@ function isPlausibleStrongIdentity(header: string, value: unknown): boolean {
   return text.length > 0 && text.length <= 200;
 }
 
-function hasInteriorGap(rows: number[]): boolean {
-  for (let index = 1; index < rows.length; index += 1) {
-    if ((rows[index] ?? 0) - (rows[index - 1] ?? 0) > 1) return true;
+function analyzeInteriorGaps(rows: RowShape[]): Array<{
+  rowStart: number;
+  rowEnd: number;
+  blocking: boolean;
+}> {
+  const sorted = [...rows].sort((left, right) => left.rowNumber - right.rowNumber);
+  const gaps: Array<{ rowStart: number; rowEnd: number; blocking: boolean }> = [];
+  for (let index = 1; index < sorted.length; index += 1) {
+    const before = sorted[index - 1];
+    const after = sorted[index];
+    if (!before || !after || after.rowNumber - before.rowNumber <= 1) continue;
+    const smallerColumnCount = Math.min(
+      before.nonEmptyColumnIndexes.length,
+      after.nonEmptyColumnIndexes.length,
+    );
+    const beforeColumns = new Set(before.nonEmptyColumnIndexes);
+    const overlapCount = after.nonEmptyColumnIndexes.filter((column) =>
+      beforeColumns.has(column),
+    ).length;
+    const overlapRatio = smallerColumnCount === 0 ? 0 : overlapCount / smallerColumnCount;
+    const repeatedHeader =
+      after.matchingHeaderCount >= 2 &&
+      after.matchingHeaderCount / after.nonEmptyColumnIndexes.length >= 0.5;
+    gaps.push({
+      rowStart: before.rowNumber + 1,
+      rowEnd: after.rowNumber - 1,
+      blocking: repeatedHeader || overlapRatio < 0.5,
+    });
   }
-  return false;
+  return gaps;
 }
 
 function toColumnProfile(column: MutableColumn): ColumnProfile {

@@ -146,6 +146,49 @@ describe("FileClassificationAgent v1", () => {
     );
   });
 
+  it("preserva uma linha vazia quando o bloco seguinte mantém a estrutura principal", async () => {
+    const directory = await temporaryBatch();
+    await writeWorkbook(directory, "historico_com_lacuna.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Histórico");
+      sheet.addRow(["Nome do Paciente", "Data Atendimento", "Valor Total", "Observação"]);
+      sheet.addRow(["Ana Souza", new Date("2026-07-10T00:00:00Z"), 100]);
+      sheet.addRow([]);
+      sheet.addRow(["Beatriz Lima", new Date("2026-08-10T00:00:00Z"), 200, "observação"]);
+    });
+
+    const result = await classifierWith().classifyDirectory(directory, defaultRequest());
+
+    expect(result.status, JSON.stringify(result)).toBe("awaiting_review");
+    if (result.status !== "awaiting_review") return;
+    expect(result.manifest.files[0]?.sheets[0]?.alerts).toContainEqual(
+      expect.objectContaining({ code: "INTERIOR_EMPTY_ROWS_PRESERVED", severity: "warning" }),
+    );
+    expect(result.plan.warnings.map((warning) => warning.code)).toContain(
+      "INTERIOR_EMPTY_ROWS_PRESERVED",
+    );
+  });
+
+  it("mantém bloqueio quando uma lacuna introduz cabeçalho repetido", async () => {
+    const directory = await temporaryBatch();
+    await writeWorkbook(directory, "dois_blocos.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Dados");
+      sheet.addRow(["Nome do Paciente", "Data Atendimento", "Valor Total"]);
+      sheet.addRow(["Ana Souza", new Date("2026-07-10T00:00:00Z"), 100]);
+      sheet.addRow([]);
+      sheet.addRow(["Nome do Paciente", "Data Atendimento", "Valor Total"]);
+      sheet.addRow(["Beatriz Lima", new Date("2026-08-10T00:00:00Z"), 200]);
+    });
+
+    const result = await classifierWith().classifyDirectory(directory, defaultRequest());
+
+    expect(result.status).toBe("blocked");
+    if (result.status !== "blocked") return;
+    expect(result.errorCode).toBe("MANIFEST_BLOCKED");
+    expect(result.manifest?.files[0]?.sheets[0]?.alerts).toContainEqual(
+      expect.objectContaining({ code: "POSSIBLE_MULTIPLE_BLOCKS", severity: "blocking" }),
+    );
+  });
+
   it("bloqueia um XLSX renomeado que contenha macro", async () => {
     const directory = await temporaryBatch();
     const path = await writeWorkbook(directory, "malicioso.xlsx", (workbook) => {
