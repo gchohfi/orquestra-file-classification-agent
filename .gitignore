@@ -4,6 +4,8 @@ coverage/
 .DS_Store
 *.log
 classification-plan*.json
+.local/
+/questionario-marcella-site/
 .env
 .env.*
 !.env.example

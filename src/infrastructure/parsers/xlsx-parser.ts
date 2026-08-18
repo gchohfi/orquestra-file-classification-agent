@@ -78,7 +78,7 @@ export async function parseXlsxFile(
   };
 }
 
-async function inspectXlsxContainer(
+export async function inspectXlsxContainer(
   file: LocalFileCandidate,
   limits: ClassifierLimits,
 ): Promise<SourceAlert[]> {

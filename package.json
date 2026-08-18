@@ -16,7 +16,12 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "classify": "tsx src/cli.ts"
+    "classify": "tsx src/cli.ts",
+    "audiences:preview": "tsx src/audience-preview-cli.ts",
+    "audiences:approved-report": "tsx src/approved-audience-report-cli.ts",
+    "audiences:enhanced-report": "tsx src/enhanced-audience-report-cli.ts",
+    "workbook:view-real": "tsx src/workbook-data-view-cli.ts",
+    "workbook:view-installments": "tsx src/procedure-installment-view-cli.ts"
   },
   "dependencies": {
     "csv-parse": "^6.1.0",
