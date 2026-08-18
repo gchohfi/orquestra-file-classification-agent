@@ -10,6 +10,7 @@ import { DeterministicClassificationModel } from "./infrastructure/models/determ
 import { InMemoryClassificationRepository } from "./infrastructure/repositories/in-memory-classification-repository.js";
 import { createOpenAIClassificationRuntime } from "./infrastructure/openai/openai-runtime.js";
 import type { ApprovedProviderGate, ClassificationModel } from "./ports.js";
+import { writeClassificationHtmlReport } from "./reporting/html-classification-report.js";
 
 const LOCAL_APPROVAL = "local-development-no-external-transfer";
 
@@ -18,7 +19,7 @@ async function main(): Promise<void> {
   const [directoryArg, ...rest] = process.argv.slice(2);
   if (!directoryArg) {
     process.stderr.write(
-      "Uso: npm run classify -- <pasta> --organization <id> --workspace <id> [--batch <id>] [--provider deterministic|openai]\n",
+      "Uso: npm run classify -- <pasta> --organization <id> --workspace <id> [--batch <id>] [--provider deterministic|openai] [--report-html <arquivo>]\n",
     );
     process.exitCode = 2;
     return;
@@ -47,6 +48,12 @@ async function main(): Promise<void> {
     workspaceId,
     actor: { userId: "local_admin", role: "organization_admin" },
   });
+  const reportPath = options.get("report-html");
+  if (reportPath) {
+    await writeClassificationHtmlReport(reportPath, result, clinicCanonicalCatalog, {
+      title: "Classificação inteligente de dados",
+    });
+  }
   process.stdout.write(`${JSON.stringify(renderCliResult(result, provider), null, 2)}\n`);
   if (result.status === "failed") process.exitCode = 1;
 }
