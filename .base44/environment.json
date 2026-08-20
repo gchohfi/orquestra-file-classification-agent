@@ -1,0 +1,9 @@
+{
+  "previewPort": 3000,
+  "healthPath": "/",
+  "startCommand": "docker compose -f docker-compose.base44.yml up -d",
+  "notes": "CLI-only project (no web server). App service installs deps, runs the vitest suite and stays alive for `docker compose exec app npm run <script>`.",
+  "secrets": [
+    { "name": "OPENAI_API_KEY", "description": "OpenAI API key — only needed if OPENAI_API_ENABLED=true and the provider gate is approved.", "requiredAtBoot": false }
+  ]
+}
